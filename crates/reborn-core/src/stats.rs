@@ -1464,6 +1464,9 @@ pub enum EntryState {
     /// Too many transient failures. Still on disk, and
     /// [`StatsQueue::retry_stalled`] puts it back in the queue.
     Stalled { reason: String },
+    /// Not meant to be uploaded at all (a league game outside a fixture). Terminal and not a problem: the game stays
+    /// on this computer, is never sent or retried, and is pruned like any finished result.
+    NotUploaded { reason: String },
 }
 
 impl EntryState {
@@ -1471,7 +1474,10 @@ impl EntryState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            EntryState::Accepted | EntryState::Held { .. } | EntryState::Rejected { .. }
+            EntryState::Accepted
+                | EntryState::Held { .. }
+                | EntryState::Rejected { .. }
+                | EntryState::NotUploaded { .. }
         )
     }
 
@@ -1699,6 +1705,9 @@ pub enum SubmitOutcome {
     /// The server stored it as a completed record that does not count as a win or loss,
     /// for example a game that ended below 36. Terminal, with a note for the player.
     Recorded { note: String },
+    /// Not meant to be uploaded at all (a league game outside a fixture). Terminal for the queue: kept locally,
+    /// never sent, never retried. `reason` is the sentence a player reads.
+    Skipped { reason: String },
     /// The token was refused. The entry stays queued; the caller clears the token.
     Unauthorized,
 }
@@ -1732,6 +1741,8 @@ pub struct SubmitReport {
     pub lost_payload: Vec<CaptureKey>,
     /// Stored as a completed record that does not count as a win or loss. Terminal.
     pub recorded: Vec<CaptureKey>,
+    /// Not uploaded by design (league game outside a fixture). Quarantined locally, never retried.
+    pub skipped: Vec<CaptureKey>,
     /// The stored token was refused. Nothing in the queue changed state; the
     /// caller must clear the token and get the player signed in again.
     pub waiting_for_sign_in: bool,
@@ -2325,6 +2336,15 @@ impl StatsQueue {
                     entry.note = Some(note);
                     self.write_entry(&entry)?;
                     report.recorded.push(entry.key.clone());
+                }
+                SubmitOutcome::Skipped { reason } => {
+                    // Not a failed attempt and not sent: the entry leaves the pending set without a ledger row.
+                    entry.last_attempt_ms = was_last_attempt_ms;
+                    entry.last_error = None;
+                    entry.finished_ms = Some(now);
+                    entry.state = EntryState::NotUploaded { reason };
+                    self.write_entry(&entry)?;
+                    report.skipped.push(entry.key.clone());
                 }
                 SubmitOutcome::Unauthorized => {
                     // Not a failed attempt: nothing about the capture was wrong.
@@ -4729,5 +4749,58 @@ mod tests {
         let e = &q.entries().unwrap()[0];
         assert_eq!(e.state, EntryState::Accepted);
         assert_eq!(e.note.as_deref(), Some("Recorded as incomplete."));
+    }
+
+    /// A skipped result (a league game outside a fixture) leaves the pending set, is kept, and is never retried.
+    #[test]
+    fn a_skipped_result_is_kept_locally_and_never_retried() {
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), None).unwrap();
+        let skip = Recorder::new(SubmitOutcome::Skipped { reason: "This game stays on this computer.".to_string() });
+        let r = q.submit_pending(&skip, 5).unwrap();
+        assert_eq!((r.skipped.len(), r.sent(), r.still_waiting()), (1, 0, 0));
+        assert!(q.pending().unwrap().is_empty(), "not left in the retry queue");
+        let again = Recorder::new(SubmitOutcome::Accepted);
+        q.submit_pending(&again, 5).unwrap();
+        assert_eq!(again.count(), 0, "never offered again");
+        let e = &q.entries().unwrap()[0];
+        assert!(matches!(e.state, EntryState::NotUploaded { .. }));
+        assert!(q.quarantined().unwrap().is_empty(), "a skipped game is not a problem entry");
+        assert!(q.capture_bytes(&e.key).unwrap().is_some(), "the capture is kept until pruned");
+        // Pruned like any finished result (the Stats page reads the archive written at ingest, not this payload).
+        let later = StatsQueue::open_at(root.path(), FixedClock::new(1 + 86_400_001)).unwrap();
+        assert_eq!(later.prune_terminal(86_400_000).unwrap().len(), 1);
+        assert!(later.entries().unwrap().is_empty());
+    }
+
+    /// The whole path: a real queue entry, the real backend submitter, a league edition session with no fixture.
+    #[test]
+    fn a_league_friendly_goes_through_the_queue_and_the_backend_submitter_without_a_post() {
+        use crate::backend::{BackendSubmitter, SessionFacts};
+        use crate::net::fake::FakeHttp;
+        let facts = |fixture: Option<u64>| SessionFacts {
+            session_id: "s1".into(), league_match: fixture.is_some(), league_edition: true, exit: "clean".into(),
+            exit_code: Some(0), match_id: None, league_fixture_id: fixture,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), Some("online")).unwrap();
+        let http = FakeHttp::default().reply("https://b/v1/results", 200, r#"{"ok":true,"status":"accepted"}"#);
+        let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts(None)], "3.1.0");
+        let r = q.submit_pending(&s, 5).unwrap();
+        assert_eq!((r.skipped.len(), r.sent(), r.still_waiting()), (1, 0, 0));
+        assert!(matches!(q.entries().unwrap()[0].state, EntryState::NotUploaded { .. }));
+        q.submit_pending(&s, 5).unwrap();
+        assert!(http.posts.lock().unwrap().is_empty(), "zero posts across two passes");
+
+        // The same entry from a fixture session is sent and accepted.
+        let root = tempfile::tempdir().unwrap();
+        let q = StatsQueue::open_at(root.path(), FixedClock::new(1)).unwrap();
+        q.enqueue(&sample_capture_with_style([1, 2]), None, Some("s1"), Some("online")).unwrap();
+        let s = BackendSubmitter::new(&http, "https://b", "tok", vec![facts(Some(9))], "3.1.0");
+        assert_eq!(q.submit_pending(&s, 5).unwrap().accepted.len(), 1);
+        assert_eq!(http.posts.lock().unwrap().len(), 1);
+        assert_eq!(q.entries().unwrap()[0].state, EntryState::Accepted);
     }
 }

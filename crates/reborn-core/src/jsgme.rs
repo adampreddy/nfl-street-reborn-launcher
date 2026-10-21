@@ -2883,7 +2883,7 @@ mod tests {
             );
         }
 
-        let conflicts = detect_conflicts(&packages, &gn7e69());
+        let conflicts = detect_conflicts(&packages, &gn7e69(), None);
         assert_eq!(
             conflicts.len(),
             1,

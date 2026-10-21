@@ -1,4 +1,4 @@
-import { icon } from "./shell.js";
+import { icon, quietCall } from "./shell.js";
 import { tabs } from "./tabs.js";
 // Installed mod collection. The core owns package conflicts and activation.
 const bridge = window.__TAURI__ ? window.__TAURI__.core : null;
@@ -270,6 +270,12 @@ for (const a of typeof document.querySelectorAll === "function" ? document.query
 
 if (bridge) {
   refresh();
+  // One shared mod list (spec 2026-10-08 v2): a member with the league build installed is told mods reach it too.
+  // The local answer (disk only): this runs on every Mods page load for every player, so never a network check.
+  quietCall("league_edition_installed").then((s) => {
+    const note = document.getElementById("league-mods-note");
+    if (note) note.hidden = !(s && s.installed === true);
+  }).catch(() => {});
 } else {
   problem = "The launcher core is not attached. Open this page inside the launcher window.";
   draw();

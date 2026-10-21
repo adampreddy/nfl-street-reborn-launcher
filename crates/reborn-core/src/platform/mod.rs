@@ -669,6 +669,12 @@ pub enum DataDir {
     /// The game-import bundle (patch manifest + reborn.xdelta) as content:
     /// what the setup wizard patches a player's own disc with.
     LibraryGameImport,
+    /// The league build (`league-game`): `game/league.iso`, the league
+    /// texture tree `textures/<league game id>/` and `league.json`.
+    /// Members only: its blobs come from the backend, never the public CDN.
+    LibraryLeague,
+    /// The league seed (`league-content`): `seed/league.s01`.
+    LibraryLeagueContent,
     Runtime,
     ModsStaging,
     ModsPackages,
@@ -702,6 +708,8 @@ impl DataDir {
             DataDir::LibraryGamePatch => "library/game-patch",
             DataDir::LibraryGameFull => "library/game-full",
             DataDir::LibraryGameImport => "library/game-import",
+            DataDir::LibraryLeague => "library/league",
+            DataDir::LibraryLeagueContent => "library/league-content",
             DataDir::Runtime => "runtime",
             DataDir::ModsStaging => "mods/staging",
             DataDir::ModsPackages => "mods/packages",
@@ -732,6 +740,8 @@ impl DataDir {
         DataDir::LibraryGamePatch,
         DataDir::LibraryGameFull,
         DataDir::LibraryGameImport,
+        DataDir::LibraryLeague,
+        DataDir::LibraryLeagueContent,
         DataDir::Runtime,
         DataDir::ModsStaging,
         DataDir::ModsPackages,

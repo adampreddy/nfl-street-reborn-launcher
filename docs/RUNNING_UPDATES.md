@@ -387,7 +387,10 @@ infrastructure, not a publish.
    nor `rebornctl publish upload` can reach the bucket (both go over the
    same S3 API, so reaching for this is a genuinely different situation,
    not a routine choice):
-   `rclone copy "C:\Reborn Origin" r2:reborn-content --progress`
+   `rclone copy "C:\Reborn Origin" r2:reborn-content --exclude "private/**" --progress`
+   **`--exclude "private/**"` is mandatory on every rclone copy of the origin to
+   `reborn-content` once league files exist: without it the members-only blobs in
+   `private\` go to the public bucket.**
    Two things about a bucket-scoped token, both found on 2026-09-06:
    - `rclone lsd r2:` answers 403. It lists every bucket in the account,
      which a token scoped to one bucket may not do. Test with
@@ -400,8 +403,8 @@ infrastructure, not a publish.
    Upload order still matters here, by hand: blobs and `components/` first,
    `release.json` and `release.json.sig` last, so a client mid-upload never
    sees a release that pins content still in flight. `rclone copy` with
-   `--exclude release.json --exclude release.json.sig`, then `rclone
-   copyto` the two release files.
+   `--exclude "private/**" --exclude release.json --exclude release.json.sig`,
+   then `rclone copyto` the two release files.
 3. Bucket settings, Custom Domains, add `files.nflstreetreborn.com`.
    Cloudflare adds the DNS record itself since you own the zone there. The
    first HTTPS request may fail for a few minutes while the certificate is
@@ -903,3 +906,85 @@ only thing standing between you and starting this whole list.
   before its manifest; the zip before `download.json`) is enforced by the
   code on both the app and `rebornctl publish upload`. Manual `rclone` is
   the one place left where it is still on you.
+
+## League files (members only)
+
+`league-game` (league disc + league textures) and `league-content` (league seed) are
+MEMBERS ONLY. Their manifests are public and signed like everything else; their blobs
+live in the PRIVATE bucket `reborn-league` (no public domain, no r2.dev), and the
+Reborn backend hands members short-lived signed URLs (`POST /v1/league/download`).
+
+Local origin: members-only blobs are in `C:\Reborn Origin\private\blobs\by-hash\`,
+NEVER `blobs\`. Public `publish upload` and any rclone push of `blobs\` cannot see them.
+
+### One-time setup
+
+1. In Cloudflare R2 create the bucket `reborn-league`. Give it NO public domain and keep
+   `r2.dev` access OFF.
+2. Widen the Publisher's R2 write token so it can also write `reborn-league`.
+3. Create a second token, read-only and scoped to `reborn-league` only, for the backend.
+   On Railway, service `reborn-api`, set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+   `R2_SECRET_ACCESS_KEY` and `LEAGUE_BLOB_BUCKET` (= `reborn-league`). Never write the
+   values into a doc, commit or chat.
+4. The Publisher setting `league_bucket_name` defaults to `reborn-league`. It must be a
+   canonical bucket name, not the production bucket and not your public bucket.
+5. Rebuild the Publisher AND `rebornctl` from the `feat/league-publish` branch before the
+   first league pin. An older build refuses to re-sign a release that pins `league-game`
+   or `league-content` (it does not silently drop them).
+
+### Publish
+
+Both commands are a dry run (a check, nothing written) until you add `--apply`.
+Leave out `--notes` / `--notes-file`: release notes are shown to EVERY player as a
+"What's new" card, including non-members. The Publisher's League files page has no
+notes box for that reason.
+
+    rebornctl publish league-content --seed <league.s01> [--seed-json <seed.json>] --origin "C:\Reborn Origin" --version 1.0.0 --key "<publisher.key>" --apply
+    rebornctl publish league-game --iso <league.iso> --textures <folder named after the league id> --origin "C:\Reborn Origin" --version 2026.10.08 --key "<publisher.key>" --apply
+    rebornctl publish upload --origin "C:\Reborn Origin" --private --bucket reborn-league --apply   # FIRST
+    rebornctl publish upload --origin "C:\Reborn Origin" --apply                                    # THEN
+
+Or in the Publisher: open League files and, in the league build or league seed section,
+choose the files and type a version (until then the button reads "Type a version first").
+Press "Publish league build <version>" (or "Publish league seed <version>"). That runs the
+dry-run check and shows the plan; press "Yes, publish" to apply. The page uploads the private bucket first and the public bucket
+second, and never starts the public upload if the private one fails.
+
+What the commands refuse (read the message, fix the input):
+- A compressed disc (RVZ, WIA, GCZ, CISO): convert it to a plain `.iso` first.
+- A file without the GameCube magic at 0x1C.
+- Retail game ids (`GN7E69`, `FR4N31`) and the placeholder `LGXXXX`. The disc's game id
+  (bytes 0..6) must be the league id.
+- A textures folder not named for the game id and not containing one; a folder with zero
+  texture files; symlinks or junctions anywhere in the inputs.
+- A seed under 1 MiB.
+- A stage folder overlapping the origin or the sources. The default stage is
+  `<origin>-stage\league-<name>-<version>`; when that would overlap the ISO, textures or
+  seed folder, pass `--stage <empty folder elsewhere>`.
+
+rclone fallback, same order:
+
+    rclone copy "C:\Reborn Origin\private\blobs" r2:reborn-league/blobs
+    rclone copy "C:\Reborn Origin" r2:reborn-content --exclude "private/**" --exclude release.json --exclude release.json.sig
+    rclone copyto "C:\Reborn Origin\release.json.sig" r2:reborn-content/release.json.sig
+    rclone copyto "C:\Reborn Origin\release.json" r2:reborn-content/release.json
+
+**`--exclude "private/**"` is mandatory on every rclone copy of the origin to
+`reborn-content` once league files exist: without it the members-only blobs in
+`private\` go to the public bucket.**
+
+### Recovery and rollback
+
+- If the private upload fails (Publisher or CLI): the league files are published locally
+  but not uploaded. Don't publish or upload anything else until this is fixed: run
+  `rebornctl publish upload --private --bucket reborn-league --origin "C:\Reborn Origin" --apply`,
+  then the public upload. Never the public upload alone: it would push the public
+  manifest and release without the members-only blobs and break every league install.
+- League components cannot be rolled back (History refuses them): their
+  blobs are not in the public bucket. Publish a new version instead.
+
+LAWS
+- Never rclone `private\` into `r2:reborn-content`. Never give `reborn-league` a public domain.
+- Never HTTP-probe a league blob URL (or any unpublished URL): Cloudflare caches the 404.
+- Sign only with a rebornctl / Publisher that knows `league-game` and `league-content`.
+- The disc's game id (bytes 0..6) must be the league id. Retail ids and `LGXXXX` are refused.

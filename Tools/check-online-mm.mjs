@@ -43,6 +43,15 @@ const STATES = {
     match: { id: 'm9', mode: 'casual', status: 'pairing', relay_state: 'pairing', relay_deadline: null, best_of: 1, you_host: true,
       opponent: 'Joker', opponent_discord: 'jock_discord', field: null, your_field_pick: null, your_accepted: false, your_ready: false,
       series: [0, 0], wins_needed: 1, winner_seat: null, hold_reason: null, seat: 0 } } },
+  // League edition rooms (Plan 3b): a fixture's room names its week and has no Quick game | Pickup switch (the server
+  // refuses one); a friendly says it is one and which rules it plays. The backend names retail rooms 'retail'.
+  lobby_league: { ...base, snapshot: { ...empty, room: { id: 'r7', code: 'L3AG9E', mode: 'casual', best_of: 3, status: 'open', you_host: true,
+    edition: 'league', ruleset: 'league', league: { league_id: 36, fixture_id: 1234, week: 6 }, league_game_version: '2026.10.08',
+    members: [{ name: 'Adam', ready: false, field: null, you: true }] }, chat: [] } },
+  lobby_league_raw: { ...base, snapshot: { ...empty, room: { id: 'r8', code: 'L3AG9F', mode: 'casual', best_of: 1, status: 'open', you_host: true,
+    edition: 'league', ruleset: 'raw', league: null, members: [{ name: 'Adam', ready: false, field: null, you: true }] }, chat: [] } },
+  lobby_retail: { ...base, snapshot: { ...empty, room: { id: 'r6', code: 'K7QP2N', mode: 'casual', best_of: 1, status: 'open', you_host: true,
+    edition: 'retail', ruleset: null, league: null, members: [{ name: 'Adam', ready: false, field: null, you: true }] }, chat: [] } },
   // 2v2 private rooms (Adam 10-04): a room this launcher opened takes four. Three in (one open spot), and full.
   lobby_three: { ...base, snapshot: { ...empty, room: { id: 'r2', code: 'K7QP2M', mode: 'casual', best_of: 1, status: 'open', you_host: true, capacity: 4,
     members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Jock', ready: true, field: null, you: false },
@@ -90,6 +99,9 @@ const EXPECT = {
   // The chat shows every line, in order (the launcher keeps the conversation; the server's line is `text`).
   lobby: { text: ['Your room · Quick game', 'K7QP2M', 'Adam', 'you', 'Jock', 'Ready', 'Not ready', 'yo', 'running it back', 'ready when you are', 'Both ready, then the host kicks it off.'],
     buttons: ["I'm ready", 'Start', 'Leave room', 'Send', 'Copy code', 'Copy invite link', 'Quick game', 'Pickup'], absent: ['field pick', 'Open spot', '2v2', ' of 4'], counts: { '.on-rd': 1, '.on-nr': 1, '.mm-chat li': 3 } },
+  lobby_league: { text: ['League game · Week 6', 'League rules · Best of 3', 'L3AG9E'], buttons: ['Start', "I'm ready", 'Leave room'], absent: ['Your room', 'Quick game', 'Pickup'] },
+  lobby_league_raw: { text: ['League friendly', 'Raw game'], absent: ['Your room', 'Quick game', 'Pickup', 'League settings'] },
+  lobby_retail: { text: ['Your room · Quick game'], buttons: ['Quick game', 'Pickup'], absent: ['League game', 'League friendly', 'League rules', 'League settings'] },
   // An older room (no capacity) stays "Your crew" with no open spots; a 2v2 room counts and shows its open spot.
   lobby_three: { text: ['Your crew · 3 of 4', 'Tuna', 'Open spot', 'Up to 4 players. 2v2 works.'], buttons: ['Start', 'Hold up', 'Leave room'],
     counts: { '.on-members li': 4, '.on-open': 1, '.on-rd': 2 }, disabled: ['Start'] },
@@ -177,7 +189,7 @@ try {
 
     // The private-room section must be hidden exactly while matchmaking has the player busy, and
     // visible otherwise - including while a match is HELD, because a held match's seats are released.
-    const busy = ['queued', 'lobby', 'lobby_nick', 'pairing_nick', 'lobby_three', 'lobby_four', 'match_four', 'pairing', 'running_bo3', 'relay_failed'].includes(name);
+    const busy = ['queued', 'lobby', 'lobby_league', 'lobby_league_raw', 'lobby_retail', 'lobby_nick', 'pairing_nick', 'lobby_three', 'lobby_four', 'match_four', 'pairing', 'running_bo3', 'relay_failed'].includes(name);
     const shown = await page.evaluate(() => getComputedStyle(document.getElementById('screen')).display !== 'none');
     if (busy && shown) problems.push('the private-room section is still offered while matchmaking has the player busy');
     if (!busy && !shown) problems.push('the private-room section is hidden when the player is free to use it');

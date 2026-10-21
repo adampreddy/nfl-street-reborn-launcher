@@ -37,7 +37,12 @@ pub enum MmError {
     /// poll is a 404) - or it is a server from before matchmaking. Either way the launcher hides
     /// the matchmaking section rather than showing an error: this is the kill switch.
     Disabled,
+    /// The room plays a newer league build than this launcher has installed (Plan 2's version check).
+    LeagueUpdateRequired { required: String },
 }
+
+/// The one sentence any page shows for a league version refusal. Plan 3a highlights the Update button on it.
+pub const LEAGUE_UPDATE_SENTENCE: &str = "Your league files are out of date. Update league files to play.";
 
 impl std::fmt::Display for MmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,6 +52,7 @@ impl std::fmt::Display for MmError {
             MmError::Offline(_) => f.write_str("Can't reach the Reborn servers right now. Trying again."),
             MmError::Protocol(_) => f.write_str("The Reborn servers sent something unexpected. Try again in a moment."),
             MmError::Disabled => f.write_str("Online matchmaking is switched off right now."),
+            MmError::LeagueUpdateRequired { .. } => f.write_str(LEAGUE_UPDATE_SENTENCE),
         }
     }
 }
@@ -125,6 +131,14 @@ pub struct Room {
     /// How many players the room takes: 4 for a room this launcher opened (it asks for [`ROOM_MAX_PLAYERS`]), 2 for
     /// one an older launcher opened. 0 = an older server that does not say, which is a room for two.
     pub capacity: u8,
+    /// `"league"` for a League edition room (spec 2026-10-08 v2 §4), else absent (retail).
+    pub edition: Option<String>,
+    /// The rules: `casual`, `ranked`, `league` (league seed) or `raw` (no seed). Absent from an older server: by mode.
+    pub ruleset: Option<String>,
+    /// `{ league_id, fixture_id, week }` for a league game; absent for friendlies and retail.
+    pub league: Option<serde_json::Value>,
+    /// The league build this room plays; a joiner on another version is refused (Plan 2).
+    pub league_game_version: Option<String>,
 }
 
 /// The most players a private room can hold (2v2, Adam 10-04). Sent as `max_players` when this launcher opens or
@@ -155,7 +169,7 @@ pub struct Opponent {
     pub avatar_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MatchView {
     pub id: String,
@@ -193,6 +207,63 @@ pub struct MatchView {
     /// Every player of a 3-4 player private room's match, by seat (0 host, 1 first joiner, 2 and 3 the others). Empty
     /// for a two-player match and from an older server: the relay then does exactly what it always did.
     pub party: Vec<PartySeat>,
+    /// `"league"` for a League edition room (spec 2026-10-08 v2 §4), else absent (retail).
+    pub edition: Option<String>,
+    /// The rules: `casual`, `ranked`, `league` (league seed) or `raw` (no seed). Absent from an older server: by mode.
+    pub ruleset: Option<String>,
+    /// `{ league_id, fixture_id, week }` for a league game; absent for friendlies and retail.
+    pub league: Option<serde_json::Value>,
+    /// The league build this room plays; a joiner on another version is refused (Plan 2).
+    pub league_game_version: Option<String>,
+    /// The server offers a rematch after this match (Adam 10-09: never after ranked or a league fixture). Absent from
+    /// an older server, which always offered one: true.
+    #[serde(default = "offered")]
+    pub rematch_available: bool,
+}
+
+fn offered() -> bool {
+    true
+}
+
+/// Hand-written so a default view agrees with a decoded one that lacks `rematch_available`: a rematch is offered.
+impl Default for MatchView {
+    fn default() -> Self {
+        Self {
+            id: Default::default(),
+            mode: Default::default(),
+            status: Default::default(),
+            relay_state: Default::default(),
+            relay_deadline: Default::default(),
+            best_of: Default::default(),
+            seat: Default::default(),
+            you_host: Default::default(),
+            opponent: Default::default(),
+            field: Default::default(),
+            your_field_pick: Default::default(),
+            seed_kind: Default::default(),
+            buffer_size: Default::default(),
+            your_accepted: Default::default(),
+            your_ready: Default::default(),
+            nsr_tag: Default::default(),
+            opponent_nsr_tag: Default::default(),
+            host_code: Default::default(),
+            series: Default::default(),
+            series_live: Default::default(),
+            outcome: Default::default(),
+            rules: Default::default(),
+            wins_needed: Default::default(),
+            winner_seat: Default::default(),
+            hold_reason: Default::default(),
+            created_at: Default::default(),
+            started_at: Default::default(),
+            party: Default::default(),
+            edition: Default::default(),
+            ruleset: Default::default(),
+            league: Default::default(),
+            league_game_version: Default::default(),
+            rematch_available: offered(),
+        }
+    }
 }
 
 /// One player of a 3-4 player match (the server's `party.js`).
@@ -353,6 +424,8 @@ pub struct RoomLookup {
 struct Refusal {
     ok: bool,
     error: Option<String>,
+    /// The league build a `league_version_mismatch` refusal asks for (null when the room has none).
+    required: Option<String>,
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -392,6 +465,7 @@ impl<'a> Client<'a> {
         if !(200..300).contains(&status) {
             let r: Refusal = serde_json::from_slice(body).unwrap_or_default();
             return Err(match (r.ok, r.error) {
+                (false, Some(e)) if e == "league_version_mismatch" => MmError::LeagueUpdateRequired { required: r.required.unwrap_or_default() },
                 (false, Some(e)) if !e.trim().is_empty() => MmError::Refused(e),
                 _ => MmError::Protocol(format!("HTTP {status} with no readable reason")),
             });
@@ -454,8 +528,18 @@ impl<'a> Client<'a> {
     }
 
     pub fn join_room(&self, code: &str) -> Result<serde_json::Value, MmError> {
+        self.join_room_as(code, None)
+    }
+
+    /// Join by code, saying which league build this launcher has. The server ignores the field for a retail room and
+    /// refuses a League room on another version (`MmError::LeagueUpdateRequired`).
+    pub fn join_room_as(&self, code: &str, league_game_version: Option<&str>) -> Result<serde_json::Value, MmError> {
         // `max_players`: this launcher can be the 3rd or 4th player of a room (an older one is refused with a sentence).
-        self.post(&format!("/v1/mm/rooms/{}/join", url_path(code)), serde_json::json!({ "max_players": ROOM_MAX_PLAYERS }))
+        let mut body = serde_json::json!({ "max_players": ROOM_MAX_PLAYERS });
+        if let Some(v) = league_game_version {
+            body["league_game_version"] = serde_json::Value::from(v);
+        }
+        self.post(&format!("/v1/mm/rooms/{}/join", url_path(code)), body)
     }
 
     /// Who invited the player (launcher spec 2026-10-02 §3.10). `None` on a 404: no such open room, or a server
@@ -1131,5 +1215,58 @@ mod tests {
         assert_eq!(m.rules.as_ref().unwrap().casual_max_games, 20);
         let old: MatchView = serde_json::from_value(serde_json::json!({ "id": "m", "best_of": 1, "series": [0, 0] })).unwrap();
         assert!(old.outcome.is_none() && old.series_live.is_empty());
+    }
+
+    #[test]
+    fn rooms_and_matches_keep_their_edition_ruleset_and_league_tag() {
+        let s: Snapshot = serde_json::from_str(r#"{"room":{"id":"r","code":"C","edition":"league","ruleset":"league",
+            "league_game_version":"2026.10.08","league":{"league_id":36,"fixture_id":1234,"week":6}},
+            "match":{"id":"m","mode":"casual","edition":"league","ruleset":"raw","league_game_version":"2026.10.08",
+            "league":{"league_id":36,"fixture_id":1234,"week":6}}}"#).unwrap();
+        let r = s.room.unwrap();
+        assert_eq!((r.edition.as_deref(), r.ruleset.as_deref(), r.league_game_version.as_deref()), (Some("league"), Some("league"), Some("2026.10.08")));
+        assert_eq!(r.league.unwrap()["fixture_id"], 1234);
+        let m = s.matched.unwrap();
+        assert_eq!((m.edition.as_deref(), m.ruleset.as_deref()), (Some("league"), Some("raw")));
+        let plain: Snapshot = serde_json::from_str(r#"{"room":{"id":"r"},"match":{"id":"m"}}"#).unwrap();
+        let (pr, pm) = (plain.room.unwrap(), plain.matched.unwrap());
+        assert!(pr.edition.is_none() && pr.league.is_none() && pm.edition.is_none() && pm.ruleset.is_none() && pm.league.is_none());
+    }
+
+    /// Adam 10-09: no rematch after a ranked or league fixture match. An older server says nothing: rematch as today.
+    #[test]
+    fn a_match_says_whether_a_rematch_is_offered_and_an_older_server_offers_one() {
+        let off: MatchView = serde_json::from_str(r#"{"id":"m","mode":"ranked","rematch_available":false}"#).unwrap();
+        assert!(!off.rematch_available);
+        let on: MatchView = serde_json::from_str(r#"{"id":"m","mode":"casual","rematch_available":true}"#).unwrap();
+        assert!(on.rematch_available);
+        let old: Snapshot = serde_json::from_str(r#"{"match":{"id":"m","mode":"casual"}}"#).unwrap();
+        assert!(old.matched.unwrap().rematch_available, "absent = today's behaviour");
+        assert!(MatchView::default().rematch_available, "a default view offers a rematch too");
+    }
+
+    #[test]
+    fn a_join_says_which_league_build_it_has() {
+        let http = crate::net::fake::FakeHttp::default().reply("https://api.test/v1/mm/rooms/K7/join", 200, r#"{"ok":true}"#);
+        let c = Client::new(&http, "https://api.test", "tok");
+        c.join_room_as("K7", Some("2026.10.08")).unwrap();
+        c.join_room("K7").unwrap();
+        let posts = http.posts.lock().unwrap();
+        let first: serde_json::Value = serde_json::from_slice(&posts[0].1).unwrap();
+        let second: serde_json::Value = serde_json::from_slice(&posts[1].1).unwrap();
+        assert_eq!(first["league_game_version"], "2026.10.08");
+        assert!(second.get("league_game_version").is_none(), "a launcher without league files sends nothing");
+        assert_eq!(first["max_players"], ROOM_MAX_PLAYERS);
+    }
+
+    /// Review Focus 3: never a raw server code on any page.
+    #[test]
+    fn a_version_refusal_is_its_own_error() {
+        let http = crate::net::fake::FakeHttp::default().reply("https://api.test/v1/mm/rooms/K7/join", 409,
+            r#"{"ok":false,"error":"league_version_mismatch","required":"2026.10.09"}"#);
+        let c = Client::new(&http, "https://api.test", "tok");
+        let e = c.join_room_as("K7", Some("2026.10.08")).unwrap_err();
+        assert_eq!(e, MmError::LeagueUpdateRequired { required: "2026.10.09".into() });
+        assert_eq!(e.to_string(), LEAGUE_UPDATE_SENTENCE);
     }
 }

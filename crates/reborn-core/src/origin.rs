@@ -59,6 +59,19 @@ pub const SIGNATURE_FILE: &str = "release.json.sig";
 /// The content-addressed blob store, relative to the origin base.
 pub const BLOB_DIR: &str = "blobs/by-hash";
 
+/// Where members-only blobs (league content) sit in the LOCAL origin.
+/// Deliberately outside `blobs/`: `plan_origin` and every rclone push of
+/// `blobs/` to the public bucket can never pick them up. On the private
+/// bucket (`reborn-league`) the same object lives at the ordinary
+/// [`blob_path`] key; only the local directory differs.
+pub const PRIVATE_BLOB_DIR: &str = "private/blobs/by-hash";
+
+/// A members-only blob's path relative to the local origin.
+pub fn private_blob_path(sha256: &Sha256Hex) -> String {
+    let s = sha256.as_str();
+    format!("{PRIVATE_BLOB_DIR}/{}/{s}", &s[..2])
+}
+
 /// A manifest larger than this is refused unread. The texture component, the
 /// largest, is about 1.3 MB for 8,050 rows; this is fifty times that, and it
 /// exists so a hostile or broken origin cannot stream a manifest forever.
@@ -109,6 +122,12 @@ impl Origin {
 
     pub fn base(&self) -> &str {
         &self.base
+    }
+
+    /// The bounded-timeout agent, for a source that opens blob URLs this origin did not build (the league's
+    /// signed links).
+    pub(crate) fn agent(&self) -> &ureq::Agent {
+        &self.agent
     }
 
     /// A relative path joined to the base. An absolute URL is returned as it
@@ -178,57 +197,70 @@ impl BlobSource for Origin {
         // uploaded, and the bare URL then fails every client's fetch (09-26, two seed files; the
         // same lever the launcher's own update URL has always carried).
         let url = format!("{}?v={}", self.url(&blob_path(&req.file.sha256)), &req.file.sha256.as_str()[..8]);
-        let call = || {
-            let mut request = self.agent.get(&url);
-            if req.offset > 0 {
-                request = request.set("Range", &format!("bytes={}-", req.offset));
-            }
-            request.call()
+        open_blob_url(&self.agent, &url, req)
+    }
+}
+
+/// Open one blob URL from `req.offset` (a `Range` request when resuming). Shared by the public CDN ([`Origin`]) and
+/// the league's signed links (`league_edition::LeagueSource`), so retry, resume and error handling are one
+/// implementation.
+pub(crate) fn open_blob_url(agent: &ureq::Agent, url: &str, req: &BlobRequest<'_>) -> Result<Box<dyn Read>> {
+    let call = || {
+        let mut request = agent.get(url);
+        if req.offset > 0 {
+            request = request.set("Range", &format!("bytes={}-", req.offset));
+        }
+        request.call()
+    };
+    // A host's passing error is asked again, not reported. One 500 out of
+    // 9,111 texture files stopped a whole 8 GB download until the player
+    // pressed Try again (Deck build test, 2026-10-06; the same file
+    // answered 200 straight after). 5xx, 429 and a failed connection are
+    // retried after 1, 2 and 4 s; anything else is an answer.
+    let mut outcome = call();
+    for wait in RETRY_WAITS {
+        let passing = match &outcome {
+            Err(ureq::Error::Status(status, _)) => *status >= 500 || *status == 429,
+            Err(ureq::Error::Transport(_)) => true,
+            Ok(_) => false,
         };
-        // A host's passing error is asked again, not reported. One 500 out of
-        // 9,111 texture files stopped a whole 8 GB download until the player
-        // pressed Try again (Deck build test, 2026-10-06; the same file
-        // answered 200 straight after). 5xx, 429 and a failed connection are
-        // retried after 1, 2 and 4 s; anything else is an answer.
-        let mut outcome = call();
-        for wait in RETRY_WAITS {
-            let passing = match &outcome {
-                Err(ureq::Error::Status(status, _)) => *status >= 500 || *status == 429,
-                Err(ureq::Error::Transport(_)) => true,
-                Ok(_) => false,
-            };
-            if !passing {
-                break;
-            }
-            std::thread::sleep(wait);
-            outcome = call();
+        if !passing {
+            break;
         }
-        match outcome {
-            Ok(resp) => {
-                if req.offset > 0 && resp.status() != 206 {
-                    return Err(invalid(format!(
-                        "{url} ignored the Range header and answered {} from the start. \
-                         Resuming {} needs a host that honors Range; nothing was written \
-                         and the {} byte(s) already downloaded are kept",
-                        resp.status(),
-                        req.file.path,
-                        req.offset
-                    )));
-                }
-                Ok(Box::new(resp.into_reader()))
+        std::thread::sleep(wait);
+        outcome = call();
+    }
+    match outcome {
+        Ok(resp) => {
+            if req.offset > 0 && resp.status() != 206 {
+                return Err(invalid(format!(
+                    "{url} ignored the Range header and answered {} from the start. \
+                     Resuming {} needs a host that honors Range; nothing was written \
+                     and the {} byte(s) already downloaded are kept",
+                    resp.status(),
+                    req.file.path,
+                    req.offset
+                )));
             }
-            Err(ureq::Error::Status(416, _)) => Err(invalid(format!(
-                "{url}: byte {} is past the end of the blob, so the partial file for {} \
-                 is longer than the published one. Nothing was written; the hash check \
-                 decides what happens to the partial file",
-                req.offset, req.file.path
-            ))),
-            Err(ureq::Error::Status(status, _)) => Err(not_found(format!(
-                "{url} answered {status} for {}. Nothing was written",
-                req.file.path
-            ))),
-            Err(ureq::Error::Transport(t)) => Err(transport(&url, t)),
+            Ok(Box::new(resp.into_reader()))
         }
+        Err(ureq::Error::Status(416, _)) => Err(invalid(format!(
+            "{url}: byte {} is past the end of the blob, so the partial file for {} \
+             is longer than the published one. Nothing was written; the hash check \
+             decides what happens to the partial file",
+            req.offset, req.file.path
+        ))),
+        // Refused (401/403) is its own kind, not text: a signed link past its time answers 403, and the league
+        // source asks the backend for new links on exactly that (`league_edition::link_expired`).
+        Err(ureq::Error::Status(status @ (401 | 403), _)) => Err(Error::PlainIo(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{url} answered {status} for {}. Nothing was written", req.file.path),
+        ))),
+        Err(ureq::Error::Status(status, _)) => Err(not_found(format!(
+            "{url} answered {status} for {}. Nothing was written",
+            req.file.path
+        ))),
+        Err(ureq::Error::Transport(t)) => Err(transport(url, t)),
     }
 }
 
@@ -246,6 +278,11 @@ fn invalid(msg: String) -> Error {
 
 fn not_found(msg: String) -> Error {
     Error::PlainIo(std::io::Error::new(std::io::ErrorKind::NotFound, msg))
+}
+
+#[cfg(test)]
+pub(crate) fn test_not_found(msg: &str) -> Error {
+    not_found(msg.to_string())
 }
 
 fn transport(url: &str, e: impl std::fmt::Display) -> Error {

@@ -1,8 +1,8 @@
 // Check that every Publisher page survives every answer the core can give,
 // and that the one-button job on each page holds its contract.
 //
-// Eight pages (Home, Content, Launcher, Roster, Roll back, Build an ISO,
-// Full installer set, Keys) each read several commands and draw from
+// Nine pages (Home, Content, Launcher, Roster, League files, Roll back,
+// Build an ISO, Full installer set, Keys) each read several commands and draw from
 // whatever came back. Each page is loaded three times, with a fake core
 // that answers everything, answers with every field null, and rejects
 // every call, and each time the page has to draw without throwing, with
@@ -228,6 +228,7 @@ async function loadPage(file, answers, mode, hooks = {}) {
 const PAGES = [
   ["crates/reborn-publisher/ui/status.js", "Home"],
   ["crates/reborn-publisher/ui/roster.js", "Roster"],
+  ["crates/reborn-publisher/ui/league.js", "League files"],
   ["crates/reborn-publisher/ui/launcher.js", "Launcher update"],
   ["crates/reborn-publisher/ui/game.js", "Build an ISO"],
   ["crates/reborn-publisher/ui/content.js", "Textures, runtime, mods"],
@@ -282,6 +283,25 @@ current = "(between page checks)";
   const { screen } = await loadPage("crates/reborn-publisher/ui/roster.js", FULL, "full");
   const b = buttonNamed(screen, /^Publish roster \d{4}\.\d{2}\.\d{2}$/);
   check("Roster's one button says what it will do", !!b && !b.disabled, buttons(screen).map((x) => x.textContent).join(" | "));
+}
+{
+  const hooks = { invoke: async (cmd) => (cmd === "league_game_run" || cmd === "league_content_run" ? { accepted: true } : undefined) };
+  const { screen, calls } = await loadPage("crates/reborn-publisher/ui/league.js", FULL, "full", hooks);
+  const game = buttonNamed(screen, /^Publish league build \d{4}\.\d{2}\.\d{2}$/);
+  const seed = buttonNamed(screen, /^Publish league seed \d{4}\.\d{2}\.\d{2}$/);
+  check("League files has one button per job", !!game && !!seed, buttons(screen).map((x) => x.textContent).join(" | "));
+  const t = text(screen);
+  check("League files says members only under each job", (t.match(/Members only\. Files go to the private league bucket; the public CDN never serves them\./g) || []).length === 2, t.slice(0, 300));
+  if (game) {
+    await click(game);
+    await settle(4);
+    const runs = calls.filter((c) => c.cmd === "league_game_run");
+    check("League build's button runs the check only (dry run)", runs.length === 1 && runs[0].args.dry_run === true, JSON.stringify(runs));
+    // Release notes become a "What's new" card for EVERY player, members or
+    // not, so the League files page never sends any.
+    check("League build sends no release notes", runs.length === 1 && !("notes" in runs[0].args), JSON.stringify(runs));
+  }
+  check("League files has no notes box", screen.querySelectorAll("textarea").length === 0 && !/\bNotes\b/.test(t), t.slice(0, 300));
 }
 {
   const { screen } = await loadPage("crates/reborn-publisher/ui/content.js", FULL, "full");

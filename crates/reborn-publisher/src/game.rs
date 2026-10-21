@@ -1159,6 +1159,7 @@ mod tests {
             sequence: 1,
             install_root: ComponentId::GamePatch.install_root().unwrap().to_string(),
             customizable: false,
+            members_only: false,
             files: vec![ManifestFile { path: CHAIN_FILE.to_string(), bytes: blob_bytes.len() as u64, sha256: blob_sha }],
         };
         let manifest_bytes = serde_json::to_vec(&component).unwrap();
@@ -1276,6 +1277,7 @@ mod tests {
             sequence,
             install_root: ComponentId::GamePatch.install_root().unwrap().to_string(),
             customizable: false,
+            members_only: false,
             files: Vec::new(),
         };
         std::fs::write(

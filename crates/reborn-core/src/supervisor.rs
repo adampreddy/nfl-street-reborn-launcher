@@ -92,6 +92,9 @@ impl From<GameBuild> for RecordedBuild {
         match b {
             GameBuild::Offline => RecordedBuild::Offline,
             GameBuild::Online => RecordedBuild::Online,
+            // The record keeps its two-value wire format (a backend reads it). A retail netplay session is already
+            // recorded `Offline` (netplay_open boots with build Offline), and a league one is the same kind of session.
+            GameBuild::League => RecordedBuild::Offline,
         }
     }
 }
@@ -168,6 +171,14 @@ pub struct SessionIntent {
     /// series. Absent for Play, private rooms and every record an older build wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_id: Option<String>,
+    /// The league fixture this session played, when it was a league game (spec 2026-10-08). Goes up as
+    /// `intent.fixture_id` beside `intent.league`. Absent for everything else and every record an older build wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub league_fixture_id: Option<u64>,
+    /// The session booted the league edition (`GameBuild::League`): the League tab's Play offline or a league room.
+    /// Only a league FIXTURE game of these uploads (ruling 2026-10-10); the rest keep their stats local.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub league_edition: bool,
 }
 
 /// One play session, as it is written to disk.
@@ -834,7 +845,7 @@ mod tests {
             panic!("expected to own the lock");
         };
         let rec = sup
-            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: true, match_id: None }))
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: true, match_id: None, league_fixture_id: None, league_edition: false }))
             .unwrap();
         assert!(rec.intent.as_ref().unwrap().league_match);
         let done = sup.finish(rec, &ExitKind::Normal).unwrap();

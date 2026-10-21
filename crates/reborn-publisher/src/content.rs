@@ -937,18 +937,18 @@ fn check_online_content_folder(root: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-fn settings_and_platform() -> Result<(Platform, Settings), String> {
+pub(crate) fn settings_and_platform() -> Result<(Platform, Settings), String> {
     let platform = Platform::detect();
     let path = crate::settings::settings_path(&platform)?;
     let settings = Settings::load(&path)?;
     Ok((platform, settings))
 }
 
-fn origin_dir(settings: &Settings) -> PathBuf {
+pub(crate) fn origin_dir(settings: &Settings) -> PathBuf {
     PathBuf::from(&settings.origin)
 }
 
-fn key_path(settings: &Settings) -> Result<PathBuf, String> {
+pub(crate) fn key_path(settings: &Settings) -> Result<PathBuf, String> {
     match settings.publisher_key.as_deref() {
         Some(p) if !p.trim().is_empty() => Ok(PathBuf::from(p)),
         _ => Err("No publisher key is configured. Set one on the Keys page before publishing.".to_string()),
@@ -960,7 +960,7 @@ fn key_path(settings: &Settings) -> Result<PathBuf, String> {
 /// here rather than passed in as a command argument: a `#[tauri::command(rename_all = "snake_case")]`
 /// argument is exactly what a browser devtools console in front of this
 /// window could set to anything.
-fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, String> {
+pub(crate) fn bucket_from(platform: &Platform, settings: &Settings) -> Result<Bucket, String> {
     let endpoint = non_empty(&settings.bucket_endpoint)
         .ok_or_else(|| "No bucket endpoint is configured. Set one in Settings before publishing.".to_string())?;
     let bucket_name = non_empty(&settings.bucket_name)

@@ -75,6 +75,8 @@ export const OPERATION_PAGES = {
   content: "Textures, runtime, mods",
   launcher: "Launcher update",
   roster: "Roster",
+  league_game: "League files",
+  league_content: "League files",
   history: "Roll back",
   game_build: "Build an ISO",
   game_patch: "Game patch",

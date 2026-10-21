@@ -103,3 +103,18 @@ test('the screen: both faces, the winner tagged, the games, and Play again / Box
   drawSeriesOver(seriesOverModel(match({ kind: 'win', winner_seat: 1 }, 1, { id: 'm1' }), live), { el: el2, avatar, teamLogo });
   assert.ok(!noBox.some((n) => n.attrs['data-key'] === 'over-box'), 'no Box score without a match page to open');
 });
+
+test('no rematch when the server says none is offered (Adam 10-09); an older server that says nothing still offers one', () => {
+  const draw = (extra) => {
+    const made = [];
+    const el = (tag, attrs = {}, ...kids) => { const n = { tag, attrs, kids }; made.push(n); return n; };
+    const avatar = () => el('img', {});
+    const teamLogo = () => el('img', {});
+    drawSeriesOver(seriesOverModel(match({ kind: 'win', winner_seat: 1 }, 1, extra), live), { el, avatar, teamLogo });
+    return made.filter((n) => n.tag === 'button').map((b) => b.attrs['data-key']);
+  };
+  assert.deepEqual(draw({ rematch_available: false }), ['over-again', 'over-box', 'over-back']);
+  assert.ok(draw({ rematch_available: true }).includes('over-rematch'));
+  assert.ok(draw({}).includes('over-rematch'), 'absent: keep showing it');
+  assert.equal(seriesOverModel(match({ kind: 'win', winner_seat: 1 }, 1, { rematch_available: false }), live).rematch, false);
+});

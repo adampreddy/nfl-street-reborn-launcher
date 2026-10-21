@@ -70,10 +70,43 @@ const FULL = {
   stats_queue: { dir: "q", depth: 2, quarantined: 0, stalled: 0, accepted: 0, held: 0, rejected: 0, total: 2, orphaned_payloads: 0, entries: [] },
   content_status: { phase: "available", origin: "https://files.test/", release: "3.0.0 sequence 3", components: [{ component: "textures", state: "available", installed: "1.0.0", offered: "1.0.1", files: 3, bytes: 4194304, repair: false, message: null }], download_bytes: 4194304, download_files: 3, repair_only: false, note: "Update available: 4 MB across 3 file(s).", installed: null },
   sessions: [{ id: "s1", build: "offline", minutes: 3.2, ended: "Crashed", needs_recovery: true }, { id: "s2", build: "offline", minutes: 1, ended: "Exited", needs_recovery: true }, { id: "s3", build: "offline", minutes: 1, ended: "Terminated", needs_recovery: true }],
+  // The League tab, as a member sees it (Tools/fixtures/league-home.json's shape, inline: the browser checks read this
+  // map through vm, which has no file access). Tools/lib/page-states.mjs draws the fuller fixture.
+  league_member: true,
+  league_home: { ok: true, signed_in: true, member: true, stale: false, schedule_published: true,
+    league: { id: 36, name: "Reborn Season 4", season: 4, week: 6, week_label: "Week 6" },
+    team: { id: 493, name: "Subway Surfers", abbr: "ADAM", logo_url: "/live-assets/league/493.png", color: "#00A3FF", record: "4-1", standing: 2 },
+    matchup: { fixture_id: 1234, week: 6, home: true, status: "scheduled", forfeit: false, score: null, series: null, winner_team_id: null, when: null,
+      opponent: { team_id: 486, name: "Football Furies", abbr: "BLONDE", logo_url: null, color: "#FF0000", record: "3-2", owner_display: "BLONDE", discord_user_id: "480510938571735040", online: true },
+      room: null, match_id: null },
+    week_games: [
+      { fixture_id: 1230, home: { team_id: 482, name: "Gridiron Ghosts", abbr: "GHO", logo_url: null, color: "#22AA44", record: "5-0" },
+        away: { team_id: 483, name: "Jock Squad", abbr: "JOCK", logo_url: null, color: "#AA2222", record: "2-3" },
+        status: "final", forfeit: false, score: { home: 49, away: 21 }, series: { home: 2, away: 0 }, winner_team_id: 482, when: null },
+      { fixture_id: 1234, home: { team_id: 493, name: "Subway Surfers", abbr: "ADAM", logo_url: "/live-assets/league/493.png", color: "#00A3FF", record: "4-1" },
+        away: { team_id: 486, name: "Football Furies", abbr: "BLONDE", logo_url: null, color: "#FF0000", record: "3-2" },
+        status: "scheduled", forfeit: false, score: null, series: null, winner_team_id: null, when: null },
+    ],
+    standings: [{ rank: 1, team_id: 482, name: "Gridiron Ghosts", abbr: "GHO", record: "5-0" }, { rank: 2, team_id: 493, name: "Subway Surfers", abbr: "ADAM", record: "4-1" }],
+    recent: [{ fixture_id: 1200, week: 5, opponent_abbr: "JOCK", home: false, result: "W", score: "28-21", series: "2-1", forfeit: false }],
+    leaders: { pass: [{ poid: 12, name: "Michael Vick", value: 14 }], rush: [{ poid: 20, name: "Barry Sanders", value: 9 }], rec: [] }, leaders_unit: "TD",
+    roster: [{ poid: 12, name: "Michael Vick", position: "QB", number: 7 }],
+    site_url: "https://nflstreetreborn.com/league/team.php?league_id=36&team_id=493" },
+  // Plan 3b's League edition commands (the answers its commands give).
+  league_edition_status: { installed: true, version: "2026.10.08", latest: "2026.10.08", update_available: false, size_bytes: 1610612736, game_id: "NSRS04" },
+  league_edition_installed: { installed: true, version: "2026.10.08", latest: null, update_available: false, size_bytes: 0, game_id: "NSRS04", installing: false, progress: null },
+  league_edition_install: { version: "2026.10.08" },
+  league_play_offline: null,
+  league_host_friendly: { action: "created", room: { room_id: "r9", code: "FRND01" } },
+  league_room_open: { action: "created", room: { room_id: "r1", code: "K7QP2M" } },
+  mm_room_join: { ok: true },
+  mm_room_action: { ok: true },
+  open_website: null,
 };
 // Every field null, and every list answer null too: a list that is absent is
-// not an empty list, and a page that assumes it is throws on .length.
-const NULLS = Object.fromEntries(Object.entries(FULL).map(([k, v]) => [k, Array.isArray(v) ? null : Object.fromEntries(Object.keys(v).map((f) => [f, null]))]));
+// not an empty list, and a page that assumes it is throws on .length. A plain
+// value (league_member's bool, a command that resolves null) answers null.
+const NULLS = Object.fromEntries(Object.entries(FULL).map(([k, v]) => [k, v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).map((f) => [f, null])) : null]));
 
 let fails = 0;
 function check(what, ok, detail = "") {
@@ -172,6 +205,7 @@ const PAGES = [
   ["crates/reborn-ui/ui/settings.js", "Settings"],
   ["crates/reborn-ui/ui/stats.js", "Stats"],
   ["crates/reborn-ui/ui/recovery.js", "Recovery"],
+  ["crates/reborn-ui/ui/league.js", "League"],
 ];
 
 for (const [file, name] of PAGES) {
@@ -244,6 +278,137 @@ for (const [file, name] of PAGES) {
  const {screen}=await loadPage("crates/reborn-ui/ui/stats.js",FULL,"full");const t=text(screen);
  check("Stats has the account block", t.includes("Signed in as Adam") && t.includes("Sign out"));
  check("Stats offers to send results", t.includes("Send results now"));
+}
+// The League tab (plan 3a Task 5): a member's page, the install gate, the controller answer, a version refusal, and a
+// non-member sent to Play. Each answer below replaces FULL's for that command; a function answer gets the args.
+{
+  async function leaguePage(over = {}) {
+    const seen = [];
+    let replaced = null;
+    global.location = { pathname: "/league.html", replace(u) { replaced = u; } };
+    const invoke = async (cmd, args = {}) => {
+      seen.push([cmd, args]);
+      const v = cmd in over ? over[cmd] : FULL[cmd];
+      if (typeof v === "function") return v(args);
+      if (!(cmd in over) && !(cmd in FULL)) throw new Error(`no fake answer for ${cmd}`);
+      return v;
+    };
+    const page = await loadPageDriven("crates/reborn-ui/ui/league.js", invoke);
+    page.done();
+    return { screen: page.screen, seen, replaced: () => replaced, press: async (node) => { for (const fn of node.listeners.click || []) await fn(); await tick(); await tick(); await tick(); } };
+  }
+  const reject = (e) => () => { throw e; };
+  let p = await leaguePage();
+  let t = text(p.screen());
+  check("League draws the heading and your team card", t.includes("Reborn Season 4 · Week 6") && t.includes("Subway Surfers") && t.includes("4-1 · 2nd"), t.slice(0, 300));
+  check("League draws the week's games", t.includes("Gridiron Ghosts") && t.includes("Final") && t.includes("You"), t.slice(0, 600));
+  check("League never says This week or draws a roster", !t.includes("This week") && !t.includes("Roster"), t.slice(0, 900));
+  const go = findByText(p.screen(), "Play Football Furies");
+  check("League offers Play {opponent}", !!go && !go.disabled);
+  check("Play {opponent} is the page's primary control", go?.attrs?.["data-primary"] === "true");
+  if (go) {
+    await p.press(go);
+    // Game day (spec 2026-10-21): the fixture's room stays on the League tab; the page reads the snapshot again.
+    const seen = p.seen.map(([c]) => c);
+    check("Play {opponent} opens the room and stays on the League tab", seen.includes("league_room_open") && seen.lastIndexOf("mm_state") > seen.indexOf("league_room_open") && global.location.href !== "online.html", JSON.stringify(seen));
+    // Final review 10-21: the relay must know this page's launch choices (Online used to send them), and the banner
+    // must not keep the pre-room answer for a minute.
+    check("The League tab reports its launch preferences to the relay", seen.includes("mm_launch_prefs"), JSON.stringify(seen));
+    check("Play {opponent} reloads the league answer after the room opens", seen.lastIndexOf("league_home") > seen.indexOf("league_room_open"), JSON.stringify(seen));
+  }
+
+  p = await leaguePage({ league_edition_status: { installed: false, version: null, latest: "2026.10.08", update_available: false, size_bytes: 1610612736, game_id: "NSRS04" } });
+  t = text(p.screen());
+  check("League offers Install league files with its size", t.includes("Install league files (1.5 GB)"), t.slice(0, 400));
+  check("Without league files the install button takes the play slot", !findByText(p.screen(), "Play Football Furies") && !findByText(p.screen(), "Play offline"), t.slice(0, 600));
+
+  p = await leaguePage({ league_edition_status: { ...FULL.league_edition_status, latest: "2026.10.09", update_available: true } });
+  check("League offers Update league files", text(p.screen()).includes("Update league files (1.5 GB)"), text(p.screen()).slice(0, 400));
+
+  let offline = 0;
+  p = await leaguePage({ league_play_offline: (args) => { offline++; if (args.playAnyway === true) return null; throw { kind: "controller_setup", message: "Your controller needs setting up before it can press Start." }; } });
+  await p.press(findByText(p.screen(), "Play offline"));
+  t = text(p.screen());
+  check("A controller that needs setup is offered Set up controller and Play anyway", t.includes("Your controller needs setting up") && !!findByText(p.screen(), "Set up controller") && !!findByText(p.screen(), "Play anyway"), t.slice(0, 600));
+  const anyway = findByText(p.screen(), "Play anyway");
+  if (anyway) await p.press(anyway);
+  check("Play anyway asks again with playAnyway", offline === 2 && p.seen.some(([c, a]) => c === "league_play_offline" && a.playAnyway === true), JSON.stringify(p.seen.filter(([c]) => c === "league_play_offline")));
+
+  p = await leaguePage({ league_room_open: reject({ kind: "league_update_required", message: "Update league files to play.", required: "2026.10.09" }) });
+  await p.press(findByText(p.screen(), "Play Football Furies"));
+  check("A newer league build is asked for in plain words", text(p.screen()).includes("Update league files to play."), text(p.screen()).slice(0, 600));
+  p = await leaguePage({ league_room_open: reject({ kind: "league_update_required", message: "Update league files to play.", required: "2026.10.01" }) });
+  await p.press(findByText(p.screen(), "Play Football Furies"));
+  check("An opponent on an older build is told to update", text(p.screen()).includes("Your opponent needs to update their league files."), text(p.screen()).slice(0, 600));
+
+  // Fix round 1: the install's no-space sentence, a version refusal on the join path, Cancel's leave and a reload that
+  // fails after it, and the friendly's ruleset before and after the switch.
+  p = await leaguePage({ league_edition_status: { ...FULL.league_edition_status, installed: false, version: null },
+    league_edition_install: reject({ kind: "no_space", message: "League files need 2.1 GB free on D:. Free up space or move Reborn to another drive." }) });
+  await p.press(findByAttr(p.screen(), "data-key", "league-install"));
+  check("An install refused for space says so", text(p.screen()).includes("League files need 2.1 GB free on D:"), text(p.screen()).slice(0, 400));
+
+  const withRoom = (room) => ({ ...FULL.league_home, matchup: { ...FULL.league_home.matchup, room } });
+  const oppId = FULL.league_home.matchup.opponent.discord_user_id;
+  p = await leaguePage({ league_home: withRoom({ room_id: "r2", code: "K7QP2M", members: 1, expires_at: null, state: "waiting", host_discord_user_id: oppId }),
+    mm_room_join: reject({ kind: "league_update_required", message: "Update league files to play.", required: "2026.10.09" }) });
+  const joinBtn = findByText(p.screen(), "Join");
+  if (joinBtn) await p.press(joinBtn);
+  check("A join refused for the league build asks for the update", !!joinBtn && text(p.screen()).includes("Update league files to play.") && p.seen.some(([c, a]) => c === "mm_room_join" && a.code === "K7QP2M"), text(p.screen()).slice(0, 600));
+
+  let homeCalls = 0;
+  const mineWaiting = withRoom({ room_id: "r7", code: "K7QP2M", members: 1, expires_at: null, state: "waiting", host_discord_user_id: "111" });
+  p = await leaguePage({ league_home: () => { homeCalls++; if (homeCalls > 1) throw { kind: "unavailable", message: "The league couldn't be loaded." }; return mineWaiting; } });
+  const cancelBtn = findByText(p.screen(), "Cancel");
+  if (cancelBtn) await p.press(cancelBtn);
+  t = text(p.screen());
+  check("Cancel leaves the room by its id", p.seen.some(([c, a]) => c === "mm_room_action" && a.roomId === "r7" && a.action === "leave"), JSON.stringify(p.seen.filter(([c]) => c === "mm_room_action")));
+  check("A reload that fails after a good load says so in one line", t.includes("Can't reach the league right now.") && (t.match(/Can't reach the league/g) || []).length === 1, t.slice(0, 400));
+  check("A successful Cancel is not reported as a failure", !t.includes("couldn't be loaded"), t.slice(0, 400));
+  // 3a final fix M1: no Join, Cancel or Open room, and no "Online", built from data the server did not just send.
+  check("After a failed refresh the cached room offers no Cancel or Open room", !findByText(p.screen(), "Cancel") && !findByText(p.screen(), "Open room"), t.slice(0, 900));
+  p = await leaguePage({ league_home: { ...withRoom({ room_id: "r2", code: "K7QP2M", members: 1, expires_at: null, state: "waiting", host_discord_user_id: oppId }), stale: true } });
+  t = text(p.screen());
+  check("A cached (stale) answer offers no Join from its old room", !findByText(p.screen(), "Join") && !findByText(p.screen(), "Cancel") && t.includes("Can't reach the league right now."), t.slice(0, 900));
+  p = await leaguePage({ league_home: { ...FULL.league_home, stale: true, matchup: { ...FULL.league_home.matchup, opponent: { ...FULL.league_home.matchup.opponent, online: true } } } });
+  t = text(p.screen());
+  check("A cached answer never says the opponent is online", !t.includes("is online") && !/\bOnline\b/.test(t.replace(/Online page|online\.html/g, "")), t.slice(0, 900));
+  check("A cached answer still offers Play {opponent} (it asks the server)", !!findByText(p.screen(), "Play Football Furies"));
+
+  // 3a final fix M2: the release check (network) on load only; a later load reads the local install state.
+  homeCalls = 0;
+  p = await leaguePage({ league_home: () => { homeCalls++; return mineWaiting; } });
+  const statusBefore = p.seen.filter(([c]) => c === "league_edition_status").length;
+  await p.press(findByText(p.screen(), "Cancel"));
+  check("The page checks the release once on load", statusBefore === 1, String(statusBefore));
+  check("A reload reads league_edition_installed, not the release check", homeCalls === 2 && p.seen.filter(([c]) => c === "league_edition_status").length === 1 && p.seen.some(([c]) => c === "league_edition_installed"), JSON.stringify(p.seen.map(([c]) => c)));
+
+  // 3a final fix M4: an install already running when the page opens is shown, Install disabled; when it ends the
+  // page checks the release again.
+  let localCalls = 0;
+  p = await leaguePage({ league_edition_status: () => ({ ...FULL.league_edition_status, installed: false, version: null, installing: localCalls === 0, progress: localCalls === 0 ? { phase: "download", done: 512, total: 2048 } : null }),
+    league_edition_installed: () => { localCalls++; return { ...FULL.league_edition_installed, installing: false }; } });
+  const busyBtn = findByAttr(p.screen(), "data-key", "league-install");
+  check("A running install shows its progress with Install disabled", busyBtn?.textContent === "Downloading league files… 25%" && busyBtn.disabled === true, String(busyBtn?.textContent));
+  check("A running install takes the play slot (no Play offline until it ends)", !findByText(p.screen(), "Play offline"));
+  await new Promise((r) => setTimeout(r, 2300)); await tick(); await tick(); await tick();
+  t = text(p.screen());
+  check("When the running install ends the page checks the release again", localCalls >= 1 && p.seen.filter(([c]) => c === "league_edition_status").length === 2 && !findByAttr(p.screen(), "data-key", "league-install")?.disabled, JSON.stringify(p.seen.map(([c]) => c)));
+
+  const store = new Map(), realStorage = global.localStorage;
+  global.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+  p = await leaguePage();
+  await p.press(findByText(p.screen(), "Friendly"));
+  await p.press(findByText(p.screen(), "Friendly"));
+  const rulesets = p.seen.filter(([c]) => c === "league_host_friendly").map(([, a]) => a.ruleset);
+  check("Friendly always plays the league rules and remembers nothing (Adam 10-17)", JSON.stringify(rulesets) === '["league","league"]' && store.size === 0, JSON.stringify(rulesets));
+  global.localStorage = realStorage;
+
+  p = await leaguePage({ league_home: { ok: true, signed_in: true, member: false } });
+  check("A non-member is sent to Play", p.replaced() === "index.html", String(p.replaced()));
+  p = await leaguePage({ league_home: { signed_in: false } });
+  check("Signed out, League offers Discord sign-in", !!findByText(p.screen(), "Sign in with Discord"), text(p.screen()).slice(0, 300));
+  global.location = { pathname: "/index.html" };
 }
 {
  const message='Could not check whether Dolphin is open. Try again.';

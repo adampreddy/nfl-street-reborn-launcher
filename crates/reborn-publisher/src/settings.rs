@@ -31,6 +31,11 @@ fn default_public_base() -> String {
     reborn_core::origin::DEFAULT_ORIGIN.to_string()
 }
 
+/// The private bucket members-only (league) blobs go to.
+fn default_league_bucket() -> Option<String> {
+    Some("reborn-league".to_string())
+}
+
 fn default_launcher_manifest() -> String {
     reborn_core::update::DEFAULT_SOURCE.to_string()
 }
@@ -56,6 +61,11 @@ pub struct Settings {
     pub bucket_endpoint: Option<String>,
     #[serde(default)]
     pub bucket_name: Option<String>,
+    /// The PRIVATE bucket members-only (league) blobs go to. Never the
+    /// public bucket: the League files page refuses the production bucket
+    /// and `bucket_name` by name.
+    #[serde(default = "default_league_bucket")]
+    pub league_bucket_name: Option<String>,
     #[serde(default = "default_public_base")]
     pub public_base: String,
     #[serde(default = "default_launcher_manifest")]
@@ -88,6 +98,7 @@ impl Default for Settings {
             xdelta: None,
             bucket_endpoint: None,
             bucket_name: None,
+            league_bucket_name: default_league_bucket(),
             public_base: default_public_base(),
             launcher_manifest: default_launcher_manifest(),
             drop_root: None,
@@ -133,7 +144,7 @@ pub fn publisher_settings() -> Result<Settings, String> {
 /// settings page with eight text boxes and a remembered-inputs map should
 /// not need nine command names to stay in sync with this struct. `key` is
 /// one of `origin`, `publisher_key`, `builder`, `xdelta`, `bucket_endpoint`,
-/// `bucket_name`, `public_base`, `launcher_manifest`, or
+/// `bucket_name`, `league_bucket_name`, `public_base`, `launcher_manifest`, or
 /// `remembered.<operation>` to set one entry of the remembered-inputs map.
 /// An unknown key is refused, naming the ones this understands, rather than
 /// silently doing nothing: a settings write that appears to succeed and
@@ -183,6 +194,10 @@ pub fn publisher_set_setting(key: String, value: serde_json::Value) -> Result<Se
                 settings.bucket_name =
                     as_opt_string(&value).ok_or("bucket_name must be a string or null")?
             }
+            "league_bucket_name" => {
+                settings.league_bucket_name =
+                    as_opt_string(&value).ok_or("league_bucket_name must be a string or null")?
+            }
             "public_base" => {
                 settings.public_base = as_string(&value).ok_or("public_base must be a string")?
             }
@@ -200,7 +215,7 @@ pub fn publisher_set_setting(key: String, value: serde_json::Value) -> Result<Se
                 return Err(format!(
                     "{other:?} is not a setting this app knows. Use one of origin, \
                      publisher_key, builder, xdelta, bucket_endpoint, bucket_name, \
-                     public_base, launcher_manifest, drop_root, or remembered.<operation>."
+                     league_bucket_name, public_base, launcher_manifest, drop_root, or remembered.<operation>."
                 ));
             }
         }
@@ -222,6 +237,17 @@ mod tests {
         assert!(s.launcher_manifest.ends_with("/launcher/latest.json"));
         assert!(s.publisher_key.is_none());
         assert!(s.remembered.is_empty());
+    }
+
+    #[test]
+    fn the_league_bucket_defaults_to_reborn_league_and_can_be_set() {
+        let s = Settings::default();
+        assert_eq!(s.league_bucket_name.as_deref(), Some("reborn-league"));
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.league_bucket_name.as_deref(), Some("reborn-league"));
+        let old: Settings = serde_json::from_str(r#"{"origin":"C:\\Reborn Origin","public_base":"https://files.nflstreetreborn.com/","launcher_manifest":"x"}"#).unwrap();
+        assert_eq!(old.league_bucket_name.as_deref(), Some("reborn-league"), "old settings files gain the default");
     }
 
     #[test]

@@ -93,6 +93,8 @@ export const STATES = {
   leaderboard: [{ name: 'leaderboard', url: 'leaderboard.html', scope: 'main', data: { leaderboard: { ...LEADERBOARD, offset: 0 } } },
     { name: 'leaderboard-soon', url: 'leaderboard.html', scope: 'main', data: { leaderboard: { ok: true, enabled: false, total: 0, rows: [], you: null } } }],
   online: [{ name: 'online', url: 'online.html', scope: 'main' }, ...onlineStates()],
+  league: leagueStates(),
+  gameday: gamedayStates(),
   onboarding: [
     ...STAGES.map((s) => ({ name: `onboarding-${s}`, url: `onboarding.html?stage=${s}`, scope: 'page' })),
     { name: 'onboarding-preparation-tasks', url: 'onboarding.html?stage=preparation', scope: 'page', progress: PREP },
@@ -252,6 +254,112 @@ function onlineStates() {
   ];
 }
 
+/** The League tab, layout F (spec 2026-10-17-league-page-v3-design.md), as Adam's team sees it: the real Season 4
+ *  answer (Tools/fixtures/league-home-s4.json, Discord ids replaced) at a Week 3 with three finals and a week_best.
+ *  league_logo answers each team's small generated logo. */
+function leagueS4() {
+  return JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-home-s4.json'), 'utf8'));
+}
+/** League game day (spec 2026-10-21-league-game-day-design.md): your fixture's room on the League tab. The S4 answer
+ *  (league-home-s4.json) with both real starting lineups and their portraits from league-gameday-s4.json; season
+ *  numbers are samples. `wk1` empties both teams' totals (no games yet). */
+function gamedayStates() {
+  const S4 = leagueS4();
+  const GD = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-gameday-s4.json'), 'utf8'));
+  const LEAGUE_EDITION = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-edition-status.json'), 'utf8'));
+  const ZERO = { gp: 0, pts: 0, pts_allowed: 0, yds: 0, pass_yds: 0, rush_yds: 0, turnovers: 0, sacks: 0, def_td: 0 };
+  const home = ({ wk1 = false, oppRoster = true, stale = false } = {}) => {
+    const h = structuredClone(S4.home);
+    h.roster = structuredClone(GD.rosters['493']);
+    h.team_season = wk1 ? ZERO : GD.team_season['493'];
+    h.matchup.opponent.roster = structuredClone(GD.rosters['484']);
+    h.matchup.opponent.team_season = wk1 ? ZERO : GD.team_season['484'];
+    h.matchup.opponent.color = '#D15619';
+    if (wk1) { h.team.record = '0-0'; h.matchup.opponent.record = '0-0'; }
+    if (!oppRoster) { delete h.matchup.opponent.roster; delete h.matchup.opponent.team_season; }
+    if (stale) h.stale = true;
+    return h;
+  };
+  const fid = S4.home.matchup.fixture_id;
+  const say = (seq, name, text) => ({ seq, name, text, at: `2026-09-30T19:5${seq}:00Z` });
+  const room = (patch = {}) => ({ id: 'r1', code: 'WHRF58', mode: 'casual', best_of: 3, status: 'open', you_host: true, edition: 'league',
+    league: { fixture_id: fid, week: 3 }, members: [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Sniper', ready: false, field: null, you: false }], ...patch });
+  const snap = (s) => ({ link: 'connected', error: null, presence_on: true, relay_error: null,
+    snapshot: { player: { name: 'Adam', region: 'na-east' }, ticket: null, room: null, match: null, chat: [], queue_depth: { ranked: 0, casual: 0 }, ...s } });
+  const match = (patch) => ({ id: 'm1', mode: 'casual', status: 'running', relay_state: 'running', best_of: 3, you_host: true, opponent: 'Sniper',
+    series: [1, 0], wins_needed: 2, winner_seat: null, hold_reason: null, seat: 0, your_accepted: true, your_ready: true, league: { fixture_id: fid, week: 3 }, ...patch });
+  const G = (name, { h = home(), mm = snap({ room: room(), chat: [say(1, 'Sniper', 'gimme 2 min'), say(2, 'Adam', 'bet')] }), extra = {} } = {}) => ({
+    name, url: 'league.html', scope: 'main', ...extra,
+    data: { league_member: true, league_home: h, league_edition_status: LEAGUE_EDITION, open_website: null, mm_state: mm,
+      league_logo: { __byArg: 'teamId', values: S4.logos }, league_portrait: { __byArg: 'poid', values: GD.faces } } });
+  const both = [{ name: 'Adam', ready: true, field: null, you: true }, { name: 'Sniper', ready: true, field: null, you: false }];
+  return [
+    G('league-gameday-week1', { h: home({ wk1: true }) }),
+    G('league-gameday-season'),
+    G('league-gameday-ready', { mm: snap({ room: room({ members: both }), chat: [say(1, 'Sniper', 'ready')] }) }),
+    G('league-gameday-guest', { mm: snap({ room: room({ you_host: false, members: [{ name: 'Sniper', ready: true, field: null, you: false }, { name: 'Adam', ready: false, field: null, you: true }] }) }) }),
+    G('league-gameday-rejoin', { h: home({ wk1: true }) }),
+    G('league-gameday-opp-missing', { h: home({ oppRoster: false }) }),
+    G('league-gameday-stale', { h: home({ stale: true }) }),
+    G('league-gameday-match', { mm: snap({ match: match({}) }) }),
+    G('league-gameday-final', { mm: snap({ match: match({ relay_state: 'complete', status: 'complete', series: [2, 1], winner_seat: 0, rematch_available: false }) }) }),
+    G('league-gameday-cancelled', { mm: snap({ match: match({ relay_state: 'void', status: 'void', series: [0, 0] }) }) }),
+    G('league-gameday-small', { extra: { viewport: { width: 800, height: 560 } } }),
+  ];
+}
+
+function leagueStates() {
+  const S4 = leagueS4();
+  const LEAGUE_HOME = S4.home;
+  const LOGOS = { __byArg: 'teamId', values: S4.logos };
+  const LEAGUE_EDITION = JSON.parse(readFileSync(path.join(root, 'Tools/fixtures/league-edition-status.json'), 'utf8'));
+  const home = (patch) => ({ ...structuredClone(LEAGUE_HOME), ...patch });
+  const matchup = (patch) => ({ ...structuredClone(LEAGUE_HOME.matchup), ...patch });
+  const oppId = LEAGUE_HOME.matchup.opponent.discord_user_id;
+  const room = (patch) => ({ room_id: 'r1', code: 'K7QP2M', members: 1, expires_at: null, state: 'waiting', host_discord_user_id: '111', ...patch });
+  const L = (name, data = {}, extra = {}) => ({ name, url: 'league.html', scope: 'main',
+    data: { league_member: true, league_home: LEAGUE_HOME, league_edition_status: LEAGUE_EDITION, league_logo: LOGOS, open_website: null, ...data }, ...extra });
+  const mineId = LEAGUE_HOME.matchup.fixture_id;
+  const live = home({ matchup: matchup({ status: 'live', series: { home: 1, away: 0 }, score: { home: 21, away: 14 }, room: room({ members: 2, state: 'in_series' }) }) });
+  live.week_games = live.week_games.map((w) => (w.fixture_id === mineId ? { ...w, status: 'live', score: { home: 21, away: 14 }, series: { home: 1, away: 0 } } : w));
+  const noLogo = { __byArg: 'teamId', values: { ...S4.logos, 484: null } };
+  const installing = { ...LEAGUE_EDITION, installed: false, version: null, installing: true, progress: { phase: 'download', done: 644245094, total: 1610612736 } };
+  const checking = { ...LEAGUE_EDITION, installing: true, progress: { phase: 'verify', done: 0, total: 1, checking: true } };
+  return [
+    L('league'),
+    L('league-waiting', { league_home: home({ matchup: matchup({ room: room() }) }) }),
+    L('league-join', { league_home: home({ matchup: matchup({ room: room({ room_id: 'r2', host_discord_user_id: oppId }) }) }) }),
+    L('league-lobby', { league_home: home({ matchup: matchup({ room: room({ members: 2, state: 'lobby', host_discord_user_id: oppId }) }) }) }),
+    L('league-live', { league_home: live }),
+    L('league-between', { league_home: home({ matchup: matchup({ status: 'in_progress', series: { home: 1, away: 0 } }) }) }),
+    L('league-final', { league_home: home({ matchup: matchup({ status: 'final', series: { home: 2, away: 1 }, winner_team_id: 493 }) }) }),
+    L('league-forfeit', { league_home: home({ matchup: matchup({ status: 'final', forfeit: true, winner_team_id: 484 }) }) }),
+    L('league-bye', { league_home: home({ matchup: matchup({ status: 'bye', opponent: null }) }) }),
+    L('league-unscheduled', { league_home: home({ schedule_published: false, matchup: null, week_games: [] }) }),
+    L('league-unlinked', { league_home: home({ matchup: matchup({ opponent: { ...LEAGUE_HOME.matchup.opponent, discord_user_id: null } }) }) }),
+    L('league-stale', { league_home: home({ stale: true, matchup: matchup({ room: room({ room_id: 'r2', host_discord_user_id: oppId }) }) }) }),
+    L('league-catchup', { league_home: home({ matchup: matchup({ week: 2, fixture_id: 9999 }) }) }),
+    L('league-not-installed', { league_edition_status: { ...LEAGUE_EDITION, installed: false, version: null } }),
+    L('league-update', { league_edition_status: { ...LEAGUE_EDITION, latest: '2026.10.17.9', update_available: true, size_bytes: 268435456 } }),
+    L('league-installing', { league_edition_status: installing, league_edition_installed: installing }),
+    L('league-checking', { league_edition_status: checking, league_edition_installed: checking }),
+    L('league-no-best', { league_home: home({ week_best: null }) }),
+    L('league-no-logo', { league_logo: noLogo }),
+    L('league-long-names', { league_home: (() => { const h = home({}); const long = 'The Extremely Long Team Name Club'; h.standings[0].name = long;
+      h.week_games[0].away.name = long; h.matchup.opponent.name = long; return h; })() }),
+    // The league server goes away after a good load: Cancel leaves the room, the reload fails, one stale line.
+    L('league-refresh-failed', { league_home: { __first: home({ matchup: matchup({ room: room() }) }),
+      __reject: { kind: 'unavailable', message: "The league couldn't be loaded. Check your connection and try again." } } }, { click: '[data-key="league-cancel"]' }),
+    L('league-controller', { league_play_offline: { __reject: { kind: 'controller_setup', message: 'Your controller is not set up for this game yet. Set it up so it can press Start.' } } }, { click: '[data-key="league-offline"]' }),
+    L('league-update-required', { league_room_open: { __reject: { kind: 'league_update_required', message: 'Update league files to play.', required: '2026.10.17.9' } } }, { click: '[data-key="league-play"]' }),
+    L('league-error', { league_home: { __reject: { kind: 'unavailable', message: "The league couldn't be loaded. Check your connection and try again." } } }),
+    L('league-signed-out', { league_home: { signed_in: false } }),
+    L('league-small', {}, { viewport: { width: 960, height: 760 } }),
+    L('league-small-live', { league_home: live }, { viewport: { width: 800, height: 560 } }),
+    L('league-pad', {}, { pad: true }),
+  ];
+}
+
 /** The post-game screen's states (series-over.js): who won, the final series, each game, Elo when sent, Box score. */
 function overStates(N, mm, empty, match, PICK) {
   const id = MATCH_5C8.match.id;
@@ -300,6 +408,7 @@ export function answers() {
   Object.assign(data, {
     session_active: false, ui_notices: [], netplay_status: null, netplay_pending_join: null, mm_state: null, mm_launch_prefs: null,
     settings_paths: { runtime: null, game: null, userDir: null, legacyRoot: null },
+    league_member: false,
     update_policy: { automatic: false, source: 'settings' }, update_check: { state: 'current', current: '3.0.0' }, update_activity: { downloading: false, ready: null },
     content_status: { phase: 'up_to_date', note: 'Everything is current.', components: [] },
     content_check: { phase: 'up_to_date', note: 'Everything is current.', components: [] },
@@ -380,7 +489,12 @@ export async function openState(browser, base, state, { viewport = { width: 1280
       if (cmd === 'player_profile' && args.before) return { ok: true, matches: (data.player_profile_all || []).filter((m) => m.at < args.before).slice(0, 10) };
       if (cmd === 'launch') return new Promise(() => {});
       // `{ __reject: 'why' }`: the command fails with that sentence (a server that refuses, or lacks the route).
-      if (cmd in data) { const v = data[cmd]; if (v && typeof v === 'object' && '__reject' in v) throw v.__reject; return v; }
+      // `{ __first: answer, __reject: 'why' }`: the first call answers, every later one fails (a server lost after a good load).
+      if (cmd in data) { const v = data[cmd];
+        // An answer that depends on one argument: { __byArg: 'teamId', values: { '482': ... } } (league_logo).
+        if (v && typeof v === 'object' && '__byArg' in v) return v.values[String(args?.[v.__byArg])] ?? null;
+        if (v && typeof v === 'object' && '__first' in v) { if (!v.__used) { v.__used = true; return v.__first; } throw v.__reject; }
+        if (v && typeof v === 'object' && '__reject' in v) throw v.__reject; return v; }
       if (/^onboarding_/.test(cmd)) return { outcome: 'recorded' };
       return null;
     } } };

@@ -1,0 +1,184 @@
+/* The League tab, layout F (spec docs/superpowers/specs/2026-10-17-league-page-v3-design.md). Layout only: every colour
+   is a theme.css token (Tools/check-theme-tokens.mjs). The same look as Stats and Online: the page heading, plain glass
+   cards, real team logos. Your team is bold with a small red dot; nothing gets a coloured wash, bar or row background. */
+body.page-league #main{padding:28px}
+.page-league #screen{display:flex;flex-direction:column;gap:16px;min-width:0}
+.page-league #screen>.refusal,.page-league #screen>.partial{margin:0}
+
+/* heading: League + the season line; your team card on the right */
+.page-league .lg-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px}
+.lg-teamcard{display:flex;align-items:center;gap:12px;padding:10px 12px;min-width:0}
+.lg-teamcard .team-logo.lg-tc-logo{width:40px;height:40px}
+.lg-tc-text{display:flex;flex-direction:column;min-width:0}
+.lg-tc-text b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-tc-text span{font-size:12.5px;color:var(--fg-3)}
+.lg-tc-site{margin-left:8px}
+
+/* the matchup banner: one slim card, both logos blurred behind it */
+.lg-banner{position:relative;overflow:hidden;padding:16px 20px;container-type:inline-size}
+.lg-banner-bg{position:absolute;inset:0;display:grid;grid-template-columns:1fr 1fr;opacity:.16;pointer-events:none}
+.lg-banner-bg .team-logo{width:100%;height:100%;object-fit:cover;filter:blur(28px) saturate(1.4);transform:scale(1.4)}
+.lg-banner-bg .team-logo.text{display:none}
+.lg-bn-row{position:relative;display:flex;align-items:center;gap:16px;min-width:0}
+.lg-bt{display:flex;align-items:center;gap:14px;flex:0 1 auto;min-width:0}
+.lg-bt-team{display:flex;align-items:center;gap:14px;min-width:0;padding:4px 8px 4px 4px;margin:-4px 0 -4px -4px;border:0;border-radius:var(--r-md);background:none;color:inherit;font:inherit;text-align:left}
+.lg-bt .team-logo.lg-bt-logo{width:52px;height:52px}
+.lg-bt-text{display:flex;flex-direction:column;min-width:0}
+.lg-bt-text b{font:700 17px/1.2 Inter,system-ui,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-bt-text span{font-size:12.5px;color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-bt-score{font:700 26px/1 Inter,system-ui,sans-serif;margin-left:4px}
+.lg-mid{display:flex;align-items:center;gap:6px;flex:none;margin:0 4px;font:700 12px Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3)}
+.lg-mid.live{color:var(--red-ink)}
+/* the status line sits over the buttons, so it never takes the team names' room */
+.lg-acts{display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-left:auto;flex:none;max-width:60%}
+.lg-act-btns{display:flex;align-items:center;gap:8px}
+.lg-bn-text{max-width:100%;font-size:12.5px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-bn-text.ok{color:var(--ok);font-weight:600}
+.lg-bn-text.bad{color:var(--red-ink);font-weight:600}
+.lg-acts .btn.primary{max-width:280px;padding:0 26px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-install{display:flex;flex-direction:column;align-items:stretch;gap:6px}
+.lg-install progress{width:100%;height:6px}
+.lg-setup p{margin-bottom:10px}
+.lg-row-btns{display:flex;flex-wrap:wrap;gap:8px}
+
+/* the three columns end on one line; the page is only as tall as its content */
+.lg-cols{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) minmax(0,1.1fr);gap:16px;align-items:stretch}
+.lg-card{display:flex;flex-direction:column;min-width:0}
+.lg-card .vc-h h2{display:flex;align-items:center}
+.lg-hlink{padding:0;border:0;background:none;color:inherit;font:inherit;cursor:pointer}
+.lg-hlink::after{content:" ›";color:var(--fg-3)}
+.lg-hlink:hover{text-decoration:underline;text-underline-offset:3px}
+
+/* every linked row is a plain button: no chrome, a quiet hover */
+.lg-link{cursor:pointer}
+.lg-row,.lg-game,.lg-brow{width:100%;margin:0;border:0;background:none;color:inherit;font:inherit;text-align:left}
+.lg-row.lg-link:hover,.lg-game.lg-link:hover,.lg-brow.lg-link:hover,.lg-bt-team.lg-link:hover{background:var(--glass-1)}
+.lg-name{display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lg-name.me{font-weight:700}
+.lg-me{flex:none;width:6px;height:6px;border-radius:50%;background:var(--red)}
+.team-logo.lg-row-logo,.team-logo.lg-g-logo{width:22px;height:22px}
+/* a small badge with no logo is just the circle: its letters would not fit */
+.team-logo.text.lg-row-logo,.team-logo.text.lg-g-logo,.team-logo.text.lg-tc-logo{font-size:0}
+.lg-bt .team-logo.text.lg-bt-logo{overflow:hidden;font-size:11px}
+
+/* standings: rank, logo, team, W-L */
+.lg-rows{display:flex;flex-direction:column;flex:1}
+.lg-row{display:grid;grid-template-columns:24px 22px minmax(0,1fr) auto;align-items:center;gap:10px;flex:1;min-height:36px;padding:0 18px;border-top:1px solid var(--rule);font-size:13px}
+.lg-rank{color:var(--fg-3)}
+.lg-rec{color:var(--fg-2)}
+.lg-row.mine .lg-rec{color:var(--fg);font-weight:700}
+
+/* the week: finals, yours, the rest; each game shares the card's height */
+.lg-games{display:flex;flex-direction:column;flex:1}
+.lg-game{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;flex:1;padding:8px 18px;border-top:1px solid var(--rule)}
+.lg-g-pair{display:flex;flex-direction:column;gap:2px;min-width:0}
+.lg-g-side{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:8px;min-height:24px;font-size:13px}
+.lg-g-side.lost{color:var(--fg-3)}
+.lg-g-score{font-weight:600}
+.lg-mark{display:flex;align-items:center;justify-content:flex-end;gap:5px;font:600 10.5px Inter,system-ui,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.lg-mark.you,.lg-mark.live{color:var(--red-ink)}
+.lg-mark .live-dot{width:6px;height:6px}
+
+/* week's best: Passing, Rushing, Receiving, top 3 each */
+.lg-best{display:flex;flex-direction:column;flex:1}
+.lg-bgrp{display:flex;flex-direction:column;justify-content:center;flex:1;padding:10px 18px;border-top:1px solid var(--rule)}
+.lg-bgrp .k-label{margin-bottom:4px}
+.lg-brow{display:grid;grid-template-columns:22px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:30px;padding:0 6px;margin:0 -6px;border-radius:var(--r-sm);font-size:13px}
+.lg-brow.top .lg-name{font-weight:700}
+.lg-line{font-size:12.5px;color:var(--fg-2);white-space:nowrap}
+.lg-best-none{padding:0 18px 18px}
+
+/* signed out, and a first load that failed */
+.lg-signin{display:flex;flex-direction:column;align-items:flex-start;gap:12px;max-width:560px;padding:28px}
+.lg-signin h2{font:700 20px/1.2 Inter,system-ui,sans-serif}
+.lg-signin p{color:var(--fg-2)}
+.lg-error{display:flex;flex-direction:column;align-items:flex-start;gap:12px}
+
+@media (max-width:1100px){
+  /* standings and the week side by side, the week's best across under them; the banner wraps */
+  .lg-cols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  #lg-best{grid-column:1/-1}
+  .lg-best{flex-direction:row}
+  .lg-bgrp{flex:1;border-left:1px solid var(--rule)}
+  .lg-bgrp:first-child{border-left:0}
+  .page-league .lg-head{flex-wrap:wrap;align-items:flex-start}
+}
+/* a narrow banner (its own width, not the window's, under 900px): the actions take a row of their own */
+@container (max-width:900px){
+  .lg-bn-row{flex-wrap:wrap}
+  .lg-acts{margin-left:0;width:100%;max-width:none;align-items:stretch}
+  .lg-bn-text{text-align:left}
+  .lg-act-btns{width:100%}
+  .lg-act-btns .btn.primary,.lg-act-btns .lg-install{flex:1;max-width:none}
+}
+@media (max-width:1000px){
+  body.page-league #main{padding:20px 24px 16px}
+}
+
+/* ---- game day (spec 2026-10-21-league-game-day-design.md, mockup gameday-v4): your fixture's room on this tab ----
+   Lineups either side, the tale of the tape between them, the launcher's own room card and chat below. Team colours
+   arrive as --tc (a plain hex from the site) and tint only that team's wash, portrait backdrop and tape bar. */
+.gd{display:flex;flex-direction:column;gap:20px}
+.gd-stale{margin-left:auto;margin-right:16px;color:var(--warn)}
+.gd-top{display:flex;align-items:center;justify-content:space-between;gap:16px;height:22px;font-size:12.5px;color:var(--fg-3)}
+.gd-back{background:none;border:0;padding:0;font:500 13px Inter,system-ui,sans-serif;color:var(--fg-2);cursor:pointer}
+.gd-back:hover{color:var(--fg)}
+.gd-board{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,340px) minmax(0,1fr);gap:20px;align-items:stretch}
+.gd-side{position:relative;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.gd-side::before{content:"";position:absolute;inset:0;background:radial-gradient(420px 220px at 0% 0%,var(--tc,transparent),transparent 70%);opacity:.22;pointer-events:none}
+.gd-side.r::before{background:radial-gradient(420px 220px at 100% 0%,var(--tc,transparent),transparent 70%)}
+.gd-sh{position:relative;display:flex;align-items:center;gap:16px;padding:22px 24px 20px}
+.gd-side.r .gd-sh{flex-direction:row-reverse;text-align:right}
+.gd-sh .team-logo.gd-logo{width:64px;height:64px;flex:none}
+.gd-sh h3{margin:0;font:700 22px/1.15 Inter,system-ui,sans-serif;letter-spacing:-.01em}
+.gd-sh p{margin:4px 0 0;font-size:13px;color:var(--fg-2)}
+.gd-pl{position:relative;display:grid;grid-template-columns:48px minmax(0,1fr) auto;grid-template-areas:"face name name" "face pos ln";align-items:center;column-gap:14px;row-gap:2px;min-height:64px;padding:8px 24px;border-top:1px solid var(--stroke)}
+.gd-side.r .gd-pl{grid-template-columns:auto minmax(0,1fr) 48px;grid-template-areas:"name name face" "ln pos face"}
+.gd-side.r .gd-who b,.gd-side.r .gd-who span{text-align:right}.gd-side.r .gd-ln{text-align:left}
+.gd-face{display:block;width:48px;height:48px;border-radius:var(--r-md);object-fit:cover;object-position:50% 18%;background:color-mix(in srgb,var(--tc,var(--glass-3)) 45%,var(--glass-1));box-shadow:inset 0 0 0 1px var(--stroke)}
+.gd-who{display:contents}
+.gd-face{grid-area:face}.gd-who b{grid-area:name}.gd-who span{grid-area:pos}.gd-ln{grid-area:ln}
+.gd-who b{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gd-who span{font-size:12px;color:var(--fg-3);white-space:nowrap}
+.gd-ln{font-size:13px;color:var(--fg-2);text-align:right;white-space:nowrap}
+.gd-ln.none{color:var(--fg-3)}
+.gd-none{margin:auto;padding:24px;color:var(--fg-3);font-size:13px}
+.gd-tape{display:flex;flex-direction:column;padding:22px 24px;min-width:0}
+.gd-tape-h{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:16px}
+.gd-tape-h h2{margin:0;font:600 16px Inter,system-ui,sans-serif}
+.gd-tape-h span{font-size:12.5px;color:var(--fg-3)}
+.gd-vs{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin-bottom:16px}
+.gd-vs .l,.gd-vs .r{display:flex;align-items:center;gap:8px}.gd-vs .r{justify-content:flex-end}
+.gd-vs .team-logo.gd-vs-logo{width:34px;height:34px}
+.gd-vs b{font-size:13px;font-weight:600}
+.gd-vs i{font:700 11px Inter,system-ui,sans-serif;font-style:normal;letter-spacing:.14em;color:var(--fg-3)}
+.gd-st{padding:11px 0;border-top:1px solid var(--stroke)}
+.gd-st-lab{display:flex;justify-content:space-between;align-items:baseline;font-size:12.5px;color:var(--fg-2);margin-bottom:7px}
+.gd-st-lab span{font-size:14px;font-weight:600;color:var(--fg-3)}.gd-st-lab span.w{color:var(--fg)}
+.gd-bars{display:grid;grid-template-columns:1fr 1fr;gap:6px;height:6px}
+.gd-bars i{display:block;height:6px;border-radius:3px;background:var(--glass-2);position:relative;overflow:hidden}
+.gd-bars i::after{content:"";position:absolute;top:0;bottom:0;width:var(--w);border-radius:3px;background:var(--c,var(--fg-3));opacity:var(--o,1)}
+.gd-bars i:first-child::after{right:0}.gd-bars i:last-child::after{left:0}
+.gd-empty{flex:1;display:flex;align-items:center;justify-content:center;margin:0;min-height:120px;font-size:15px;font-weight:600;color:var(--fg)}
+.gd-room{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:20px}
+.gd-room>.on-talk{contain:size;min-height:280px}
+.gd-room .on-members{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.gd-room .on-members li{height:48px;padding:0 14px;border:1px solid var(--stroke);border-radius:var(--r-md);background:var(--glass-1)}
+.gd-room .on-roomfoot{padding-top:18px}
+.btn.done{gap:8px;color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,transparent);background:color-mix(in srgb,var(--ok) 10%,transparent);cursor:default}
+.gd-room.match{grid-template-columns:1fr}
+.gd-match{display:flex;align-items:center;gap:24px;padding:24px 28px}
+.gd-m-score{font:700 30px/1 Inter,system-ui,sans-serif}
+.gd-m-text{flex:1;min-width:0}.gd-m-text b{font-size:15px}.gd-m-text p{margin:4px 0 0;font-size:12.5px;color:var(--fg-2)}
+.gd-m-btns{display:flex;gap:10px}
+@media (max-width:1180px){
+  .gd-board{grid-template-columns:1fr 1fr}
+  .gd-board>.gd-tape{grid-column:1 / -1;order:3}
+  .gd-empty{min-height:0;padding:8px 0 4px}
+}
+@media (max-width:1000px){
+  .gd-board{grid-template-columns:1fr}
+  .gd-board>.gd-tape{order:3}
+  .gd-room{grid-template-columns:1fr}
+  .gd-room>.on-talk{height:300px}
+}

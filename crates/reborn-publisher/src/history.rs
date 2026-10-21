@@ -188,7 +188,7 @@ pub fn history_versions(component: String) -> Result<serde_json::Value, String> 
 /// calls `release` at `apply: false`.
 #[tauri::command(rename_all = "snake_case")]
 pub fn rollback_plan(component: String, version: String) -> Result<serde_json::Value, String> {
-    let id = parse_component(&component)?;
+    let id = rollback_component(&component)?;
     let (_platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
     let key = key_path(&settings)?;
@@ -260,7 +260,7 @@ pub fn rollback_plan(component: String, version: String) -> Result<serde_json::V
 /// module doc's "Upload: scoped to what this rollback actually changes".
 #[tauri::command(rename_all = "snake_case")]
 pub fn rollback_run(component: String, version: String, dry_run: bool) -> Result<serde_json::Value, String> {
-    let id = parse_component(&component)?;
+    let id = rollback_component(&component)?;
     let (platform, settings) = settings_and_platform()?;
     let origin = origin_dir(&settings);
     let key = key_path(&settings)?;
@@ -434,6 +434,22 @@ fn parse_component(name: &str) -> Result<ComponentId, String> {
         let names: Vec<&str> = ComponentId::ALL.iter().map(|c| c.as_str()).collect();
         format!("{name:?} is not a component this build knows. Use one of: {}.", names.join(", "))
     })
+}
+
+/// A component this page can roll back. Members-only components
+/// (`league-game`, `league-content`) are refused by name: a rollback here
+/// uploads the target's blobs to the PUBLIC bucket, and theirs live only in
+/// the private one. Checked first, before settings, the key or the vault.
+fn rollback_component(name: &str) -> Result<ComponentId, String> {
+    let id = parse_component(name)?;
+    if id.is_members_only() {
+        return Err(format!(
+            "{} is members-only. League files can't be rolled back here; publish a new league version \
+             instead (on the League files page).",
+            id.as_str()
+        ));
+    }
+    Ok(id)
 }
 
 /// The signed release in the LOCAL origin, and its pins resolved to each
@@ -629,4 +645,34 @@ fn plain_err(message: impl Into<String>) -> reborn_core::Error {
 
 fn thousands(n: u64) -> String {
     reborn_core::publish::thousands(n)
+}
+
+#[cfg(test)]
+mod members_only_tests {
+    use super::*;
+
+    /// A rollback uploads the target's blobs to the PUBLIC bucket; a
+    /// members-only component's blobs must never go there, so both commands
+    /// refuse league-game and league-content before reading settings or
+    /// touching anything.
+    #[test]
+    fn rollback_refuses_members_only_components_before_anything_runs() {
+        for name in ["league-game", "league-content"] {
+            let plan = rollback_plan(name.to_string(), "1.0.0".to_string()).unwrap_err();
+            assert!(plan.contains("League files can't be rolled back here"), "{name}: {plan}");
+            assert!(plan.contains("publish a new league version instead"), "{name}: {plan}");
+            let run = rollback_run(name.to_string(), "1.0.0".to_string(), true).unwrap_err();
+            assert!(run.contains("League files can't be rolled back here"), "{name}: {run}");
+            // The real (non-dry) run is not called: it would read the real
+            // settings/vault. The guard it opens with is asserted directly.
+            let guard = rollback_component(name).unwrap_err();
+            assert!(guard.contains("League files can't be rolled back here"), "{name}: {guard}");
+        }
+    }
+
+    #[test]
+    fn rollback_still_accepts_public_components() {
+        assert_eq!(rollback_component("roster").unwrap(), ComponentId::Roster);
+        assert_eq!(rollback_component("textures").unwrap(), ComponentId::Textures);
+    }
 }

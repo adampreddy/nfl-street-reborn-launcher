@@ -612,15 +612,36 @@ fn main() -> std::process::ExitCode {
     // moved Adam's 2.1 folder aside in the middle of a test run. A command
     // touches the real roots only when it is told to.
 
-    let cli = Cli::parse();
-    match run(cli) {
-        Ok(code) => code,
+    // Parse and run on a thread with room to spare. clap's derived parser for
+    // this many subcommands needs more than the 1 MiB a Windows main thread
+    // gets in an unoptimized build (`rebornctl --help` overflowed it), and
+    // the commands themselves are deep. A panic on the worker has already
+    // been reported by the hook above; it exits 101 like a main-thread panic.
+    let worker = std::thread::Builder::new().stack_size(WORKER_STACK).spawn(|| {
+        let cli = Cli::parse();
+        match run(cli) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::ExitCode::from(2)
+            }
+        }
+    });
+    match worker {
+        Ok(w) => match w.join() {
+            Ok(code) => code,
+            // The panic hook has already reported it.
+            Err(_) => std::process::ExitCode::from(101),
+        },
         Err(e) => {
-            eprintln!("error: {e}");
-            std::process::ExitCode::from(2)
+            eprintln!("error: could not start the worker thread: {e}");
+            std::process::ExitCode::from(101)
         }
     }
 }
+
+/// Stack for the thread `main` parses and runs on: 16 MiB.
+const WORKER_STACK: usize = 16 * 1024 * 1024;
 
 fn run(cli: Cli) -> reborn_core::Result<std::process::ExitCode> {
     let platform = Platform::detect();
@@ -2864,7 +2885,7 @@ fn mods_activation(
     }
 
     let (ordered, missing) = active_packages(&activation, &installed);
-    for conflict in detect_conflicts(&ordered, &game_id) {
+    for conflict in detect_conflicts(&ordered, &game_id, reborn_core::mods::payload_fallback_for(&game_id).as_ref()) {
         if conflict.is_hard() {
             println!();
             println!("{}", conflict.message());
@@ -3687,6 +3708,7 @@ fn describe_state(state: &EntryState) -> String {
         EntryState::Queued => "waiting to be sent".to_string(),
         EntryState::Quarantined { reason } => format!("held back: {}", reason.message()),
         EntryState::Accepted => "sent and counted".to_string(),
+        EntryState::NotUploaded { .. } => "kept on this computer, not sent".to_string(),
         EntryState::Held { reason } => {
             format!("sent, and a person will decide. This is a success: {reason}")
         }

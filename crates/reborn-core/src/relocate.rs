@@ -39,8 +39,8 @@ const STAGED_MARKER: &str = ".reborn-moving";
 /// Inside the old folder once it is put aside, so a leftover one is known to
 /// be ours to delete.
 const RETIRED_MARKER: &str = ".reborn-moved";
-/// Left free on the new drive beyond the copy itself.
-const MARGIN_BYTES: u64 = 1 << 30;
+/// Left free on the new drive beyond the copy itself. Also the League install's margin (reborn-ui league_edition).
+pub const MARGIN_BYTES: u64 = 1 << 30;
 /// Where the outcome is written, inside the data root.
 pub const RESULT_FILE: &str = "config/relocation.json";
 

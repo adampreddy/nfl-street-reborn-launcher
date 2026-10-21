@@ -1,0 +1,16 @@
+﻿One line per file vs replica:
+api/bot.php: same as live
+_inc/nsr_standings.php: same
+_inc/nsr_hidden.php: same (NSR_HIDDEN_LEAGUES = 6, 8; 36 not hidden)
+_inc/nsr_owners.php: same
+_inc/nsr_data.php: DIFFERS - replica was AHEAD of live (hidden-league filtering in nsr_season_slots/nsr_player_leagues, simple nsr_leagues); live has league phases (NSR_PREPUBLIC_PHASES, nsr_viewer_inside, nsr_league_rows) and nsr_week_meta/league_weeks labels in nsr_week_label. Replica overwritten with live; old copies in replica-before.
+All 13 required function signatures present in live nsr_data.php, unchanged. bot.php has out()/fail() and ends with fail('Unknown action: ' . $action).
+
+
+== Task 5: live deploy (2026-10-08 18:56) ==
+Uploaded _inc/nsr_team_home.php SHA-256 3023FCFBA702D55F26EF92B7CD0136895E9AE30594BA5EB61747EDAEE913E887 and api/bot.php SHA-256 752404AC79CEA4EB58A6FAE88AA2114BB6FF9A260EEB6FF9371624B0B2D809D7 (both byte-verified by re-download).
+Owner-count runner (__lt_owner_count.php) was 403-blocked by SiteGround, deleted from live, and replaced by API checks.
+Live checks: no-token 401; unknown id 200 member:false; Adam's id 200 member:true league 36 'Reborn Season 4' team 493 Subway Surfers (week 1, bye, week_games empty); stat_schema regression 200 ok.
+Discord coverage via fixtures action (league 36, weeks 1-14): 0 fixtures scheduled, so missing_discord could NOT be determined (inconclusive).
+Note: SiteGround intermittently returns 403 on the first request after a pause; retry succeeds.
+2026-10-08T22:36:52 Plan 2 Task 1: team_home league_id deployed; nsr_team_home.php E4FA584A8181DEB56F0FD9769E2741D5776EBF2826332C3B3F7702149A7AF702 bot.php F28B76AD64DE92F44763ADD41B781021B531DBD343A60CACA67CE3D41E338B04; rollback copies stage_league_tab\v3\before

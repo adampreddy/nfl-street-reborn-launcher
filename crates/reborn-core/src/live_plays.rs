@@ -230,10 +230,17 @@ pub struct MatchCtx {
     pub games_before: u32,
 }
 
+/// A league edition match with no league fixture (a league friendly): its results stay on this computer (ruling
+/// 2026-10-10), so it is never streamed live and never reported on.
+pub fn keeps_results_local(m: &crate::matchmaking::MatchView) -> bool {
+    m.edition.as_deref().map(str::trim) == Some("league")
+        && m.league.as_ref().and_then(|l| l.get("fixture_id")).and_then(|f| f.as_u64()).is_none()
+}
+
 /// The live feed runs only while the server says the match is being played.
 pub fn match_ctx(m: &crate::matchmaking::MatchView) -> Option<MatchCtx> {
     // The 3rd and 4th player of a private room stream nothing: the server takes plays from seats 0 and 1 only.
-    (m.status == "running" && !m.extra_player()).then(|| MatchCtx {
+    (m.status == "running" && !m.extra_player() && !keeps_results_local(m)).then(|| MatchCtx {
         match_id: m.id.clone(),
         best_of: m.best_of,
         games_before: m.series.iter().map(|w| *w as u32).sum(),
@@ -636,6 +643,25 @@ mod tests {
         m.status = "running".into();
         m.seat = 2;
         assert_eq!(match_ctx(&m), None);
+    }
+
+    #[test]
+    fn a_league_friendly_streams_nothing_and_a_league_fixture_still_does() {
+        let mut m = crate::matchmaking::MatchView::default();
+        m.id = "3f1c0f3e-0000-4000-8000-000000000001".into();
+        m.best_of = 3;
+        m.status = "running".into();
+        m.edition = Some("league".into());
+        assert_eq!(match_ctx(&m), None, "league edition, no fixture: a friendly");
+        m.league = Some(serde_json::json!({"fixture_id": null}));
+        assert_eq!(match_ctx(&m), None);
+        m.league = Some(serde_json::json!({"fixture_id": 77}));
+        assert!(match_ctx(&m).is_some(), "a league fixture streams");
+        m.edition = Some("retail".into());
+        m.league = None;
+        assert!(match_ctx(&m).is_some(), "retail is unchanged");
+        m.edition = None;
+        assert!(match_ctx(&m).is_some());
     }
 
     #[test]

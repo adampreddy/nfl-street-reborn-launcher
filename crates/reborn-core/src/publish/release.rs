@@ -247,7 +247,7 @@ pub fn release(req: &ReleaseRequest<'_>, sink: Sink<'_>) -> Result<Outcome<Signe
         // Every blob the manifest names, present at its published length.
         let mut missing = Vec::new();
         for file in &serialized.component().files {
-            let blob = origin.join(blob_path(&file.sha256));
+            let blob = crate::publish::stored_blob(origin, serialized.component().members_only, &file.sha256);
             match std::fs::metadata(&blob) {
                 Ok(m) if m.len() == file.bytes => {}
                 _ => missing.push(file.path.clone()),
@@ -721,5 +721,40 @@ mod tests {
         lines.clear();
         assert!(matches!(republish_pinning(&no_key, &mut |e: Event| lines.push(e.line)).unwrap(), Outcome::Described));
         assert!(lines.iter().any(|l| l.contains("No --key")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_league_component_lands_in_the_private_store_and_signs() {
+        let w = world();
+        publish(&w, ComponentId::LeagueGame, "2026.10.08", 1, &[("game/league.iso", b"ZZLG01 league disc")]);
+        let sha = crate::manifest::Sha256Hex::from_bytes(b"ZZLG01 league disc");
+        assert!(w.origin.join(crate::origin::private_blob_path(&sha)).is_file(), "private copy");
+        assert!(!w.origin.join(crate::origin::blob_path(&sha)).exists(), "never public");
+        let (outcome, lines) = sign(&w, "3.0.0", 1, &[pin(ComponentId::LeagueGame, "2026.10.08")], true);
+        assert!(outcome.is_done(), "{lines:#?}");
+    }
+
+    #[test]
+    fn a_league_blob_shared_with_retail_is_still_stored_privately() {
+        let w = world();
+        publish(&w, ComponentId::Runtime, "1.0.0", 1, &[("same.bin", b"identical")]);
+        publish(&w, ComponentId::LeagueGame, "2026.10.08", 1, &[("textures/ZZLG01/same.bin", b"identical")]);
+        let sha = crate::manifest::Sha256Hex::from_bytes(b"identical");
+        assert!(w.origin.join(crate::origin::blob_path(&sha)).is_file());
+        assert!(w.origin.join(crate::origin::private_blob_path(&sha)).is_file());
+    }
+
+    #[test]
+    fn a_league_pin_whose_private_blob_is_missing_is_refused_even_if_a_public_copy_exists() {
+        let w = world();
+        publish(&w, ComponentId::LeagueGame, "2026.10.08", 1, &[("game/league.iso", b"disc")]);
+        let sha = crate::manifest::Sha256Hex::from_bytes(b"disc");
+        let private = w.origin.join(crate::origin::private_blob_path(&sha));
+        let public = w.origin.join(crate::origin::blob_path(&sha));
+        std::fs::create_dir_all(public.parent().unwrap()).unwrap();
+        std::fs::rename(&private, &public).unwrap();
+        let (outcome, lines) = sign(&w, "3.0.0", 1, &[pin(ComponentId::LeagueGame, "2026.10.08")], true);
+        assert!(!outcome.is_done(), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("blob(s) are not in the origin")), "{lines:#?}");
     }
 }

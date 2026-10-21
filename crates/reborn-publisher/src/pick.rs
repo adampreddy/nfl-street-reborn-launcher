@@ -33,10 +33,12 @@ fn filtered(kind: &str, dialog: rfd::FileDialog) -> Result<rfd::FileDialog, Stri
         "roster" => dialog.add_filter("Reborn roster", &["rebornroster"]),
         "memory card" => dialog.add_filter("GameCube memory card", &["raw", "gcp"]),
         "executable" => dialog.add_filter("Executable", &["exe"]),
+        "save state" => dialog.add_filter("Dolphin save state", &["s01"]),
+        "json" => dialog.add_filter("JSON", &["json"]),
         "any" => dialog,
         other => {
             return Err(format!(
-                "{other:?} is not a file kind this picker knows. Use one of disc image, roster, memory card, executable, any."
+                "{other:?} is not a file kind this picker knows. Use one of disc image, roster, memory card, executable, save state, json, any."
             ));
         }
     })

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use crate::inventory::{scan_component, ComponentSpec, ScanObserver, ScanOutcome, SerializedComponent};
 use crate::library::hash_file;
 use crate::manifest::{ManifestFile, Sha256Hex};
-use crate::origin::blob_path;
 use crate::publish::{err, io_err, manifest_path, out, refuse, thousands, Outcome, Sink};
 use crate::{Error, Result};
 
@@ -87,7 +86,7 @@ pub fn publish_component(req: &ComponentRequest<'_>, observer: &dyn ScanObserver
     let mut shared_bytes = 0u64;
     let mut to_copy: Vec<(&ManifestFile, PathBuf)> = Vec::new();
     for file in &serialized.component().files {
-        let dst = origin.join(blob_path(&file.sha256));
+        let dst = crate::publish::stored_blob(origin, spec.id().is_members_only(), &file.sha256);
         match std::fs::metadata(&dst) {
             Ok(m) if m.len() == file.bytes => {
                 shared += 1;
@@ -120,6 +119,9 @@ pub fn publish_component(req: &ComponentRequest<'_>, observer: &dyn ScanObserver
     if shared > 0 {
         out!(sink, "              Shared blobs are uploaded once and fetched once, whichever");
         out!(sink, "              component or version references them.");
+    }
+    if spec.id().is_members_only() {
+        out!(sink, "              Members only: blobs go to {}, never the public CDN.", crate::origin::PRIVATE_BLOB_DIR);
     }
 
     if !apply {

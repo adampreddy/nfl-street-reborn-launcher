@@ -115,6 +115,16 @@ pub enum ManifestError {
     #[error("component {0:?} does not declare the mandatory customizable field")]
     MissingCustomizable(String),
 
+    #[error(
+        "component {component:?} declares members_only = {declared} but that \
+         component is members_only = {expected}"
+    )]
+    MembersOnlyMismatch {
+        component: String,
+        declared: bool,
+        expected: bool,
+    },
+
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -212,6 +222,17 @@ impl Release {
                 requested: requested.to_string(),
             });
         }
+        // The flag is derived from the identity, so a manifest that
+        // disagrees is wrong or hostile either way.
+        if let Some(id) = crate::inventory::ComponentId::parse(requested) {
+            if component.members_only != id.is_members_only() {
+                return Err(ManifestError::MembersOnlyMismatch {
+                    component: requested.to_string(),
+                    declared: component.members_only,
+                    expected: id.is_members_only(),
+                });
+            }
+        }
         Ok(component)
     }
 }
@@ -245,7 +266,23 @@ pub struct Component {
     /// soundtrack from being re-fetched over. See [`crate::library::Repairer`].
     pub customizable: bool,
 
+    /// Whether this component's blobs are withheld from the public CDN.
+    ///
+    /// True for `league-game` and `league-content` only, derived from the
+    /// identity like `customizable`. The manifest itself is public and pinned
+    /// like any other. A launcher fetches the blobs through the backend's
+    /// `POST /v1/league/download` (signed, short-lived URLs), never from
+    /// `<origin>/blobs/by-hash`. Absent means false, and false is never
+    /// written, so every manifest published before this field existed still
+    /// round-trips byte for byte.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub members_only: bool,
+
     pub files: Vec<ManifestFile>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -484,5 +521,78 @@ mod tests {
     fn total_bytes_sums_the_file_list() {
         let c = Component::parse(component_json("offline-content", true).as_bytes()).unwrap();
         assert_eq!(c.total_bytes(), 1_459_978_240);
+    }
+
+    /// Every manifest published before league content existed has no
+    /// `members_only` key. It must still parse, as public.
+    #[test]
+    fn a_manifest_without_members_only_parses_as_public() {
+        let c = Component::parse(component_json("offline-content", true).as_bytes()).unwrap();
+        assert!(!c.members_only);
+    }
+
+    /// And it must serialize back without the key, byte for byte, or the
+    /// release signer's round-trip check refuses every old manifest.
+    #[test]
+    fn a_public_manifest_serializes_without_the_members_only_key() {
+        let c = Component::parse(component_json("runtime", false).as_bytes()).unwrap();
+        let out = serde_json::to_string_pretty(&c).unwrap();
+        assert!(!out.contains("members_only"), "{out}");
+    }
+
+    #[test]
+    fn a_members_only_manifest_says_so_and_round_trips() {
+        let json = component_json("league-game", false)
+            .replace("\"customizable\": false,", "\"customizable\": false,
+  \"members_only\": true,");
+        let c = Component::parse(json.as_bytes()).unwrap();
+        assert!(c.members_only);
+        let out = serde_json::to_string_pretty(&c).unwrap();
+        assert!(out.contains("\"members_only\": true"), "{out}");
+    }
+
+    fn release_pinning(name: &str, json: &str) -> Release {
+        let pin = Sha256Hex::from_bytes(json.as_bytes());
+        Release::parse(
+            format!(
+                r#"{{"schema": "nsr.release.v1", "version": "2.4.0", "sequence": 12,
+                  "components": {{"{name}": {{"url": "https://example/x.json", "sha256": "{pin}"}}}}}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn with_members_only(json: String) -> String {
+        json.replace("\"customizable\": false,", "\"customizable\": false,
+  \"members_only\": true,")
+    }
+
+    #[test]
+    fn a_league_manifest_marked_public_is_refused_on_load() {
+        let json = component_json("league-game", false);
+        let err = release_pinning("league-game", &json)
+            .accept_component("league-game", json.as_bytes())
+            .unwrap_err();
+        assert!(matches!(err, ManifestError::MembersOnlyMismatch { .. }), "{err:?}");
+        assert!(!err.to_string().contains("  "), "no run of spaces: {err}");
+    }
+
+    #[test]
+    fn a_retail_manifest_marked_members_only_is_refused_on_load() {
+        let json = with_members_only(component_json("runtime", false));
+        let err = release_pinning("runtime", &json)
+            .accept_component("runtime", json.as_bytes())
+            .unwrap_err();
+        assert!(matches!(err, ManifestError::MembersOnlyMismatch { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_correctly_flagged_league_manifest_is_accepted_on_load() {
+        let json = with_members_only(component_json("league-game", false));
+        let c = release_pinning("league-game", &json)
+            .accept_component("league-game", json.as_bytes())
+            .unwrap();
+        assert!(c.members_only);
     }
 }

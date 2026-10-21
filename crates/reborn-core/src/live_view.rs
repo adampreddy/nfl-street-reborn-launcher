@@ -52,7 +52,7 @@ impl LiveError {
 }
 
 /// A non-success status as a [`LiveError`]: 429 is its own kind, everything else is `Server`.
-fn status_error(status: u16) -> LiveError {
+pub(crate) fn status_error(status: u16) -> LiveError {
     if status == 429 {
         LiveError::RateLimited
     } else {
@@ -94,13 +94,20 @@ pub fn list(http: &dyn Http, origin: &str) -> Result<Value, LiveError> {
 
 /// `GET {origin}/v1/live/{id}`. `404` is not an error: the match has ended or was never live, and
 /// the caller reads that as "nothing to show" rather than a failure. `match_id` is checked
-/// against [`is_canonical_uuid`] before anything is sent.
-pub fn snapshot(http: &dyn Http, origin: &str, match_id: &str) -> Result<Option<Value>, LiveError> {
+/// against [`is_canonical_uuid`] before anything is sent. `token`, when present, goes as the `Authorization: Bearer`
+/// header (never logged, never in an error).
+pub fn snapshot(http: &dyn Http, origin: &str, token: Option<&str>, match_id: &str) -> Result<Option<Value>, LiveError> {
     if !is_canonical_uuid(match_id) {
         return Err(LiveError::BadId);
     }
     let url = format!("{}/v1/live/{}", origin.trim_end_matches('/'), match_id);
-    let reply = http.get_text(&url).map_err(|_| LiveError::Unreachable)?;
+    // A league match answers only its two seated players, with the device token as a bearer (backend contract). A
+    // retail match is public: with no token the request is the plain GET it always was.
+    let reply = match token.filter(|t| !t.trim().is_empty()) {
+        Some(t) => http.get_text_as(&url, Some(t)),
+        None => http.get_text(&url),
+    }
+    .map_err(|_| LiveError::Unreachable)?;
     if reply.status == 404 {
         return Ok(None);
     }
@@ -319,25 +326,55 @@ mod tests {
     fn snapshot_404_is_none() {
         let url = format!("https://api.test/v1/live/{ID}");
         let http = FakeHttp::default().reply(&url, 404, "");
-        assert_eq!(snapshot(&http, ORIGIN, ID).unwrap(), None);
+        assert_eq!(snapshot(&http, ORIGIN, None, ID).unwrap(), None);
+    }
+
+    #[test]
+    fn a_signed_in_snapshot_sends_the_bearer_and_a_signed_out_one_sends_none() {
+        let url = format!("https://api.test/v1/live/{ID}");
+        let http = FakeHttp::default().reply(&url, 200, r#"{"id":"x"}"#);
+        assert!(snapshot(&http, ORIGIN, Some("tok"), ID).unwrap().is_some());
+        assert_eq!(http.gets.lock().unwrap().as_slice(), &[(url.clone(), Some("tok".to_string()))]);
+        // No token (or a blank one): the plain public GET, no Authorization header at all.
+        for t in [None, Some(""), Some("  ")] {
+            let http = FakeHttp::default().reply(&url, 200, r#"{"id":"x"}"#);
+            assert!(snapshot(&http, ORIGIN, t, ID).unwrap().is_some(), "retail works without a token");
+            assert!(http.gets.lock().unwrap().is_empty(), "no authenticated request was made");
+        }
+        // A seated-players-only answer the token did not satisfy is an ordinary 'nothing to show' / error, not a leak.
+        let http = FakeHttp::default().reply(&url, 404, "");
+        assert_eq!(snapshot(&http, ORIGIN, Some("tok"), ID).unwrap(), None);
+    }
+
+    #[test]
+    fn the_snapshot_path_never_logs_or_prints_the_token() {
+        for (name, src) in [("core", include_str!("live_view.rs")), ("ui", include_str!("../../reborn-ui/src/live_view.rs"))] {
+            let from = src.find(&format!("{}{}", "pub fn snapshot", "(")).or_else(|| src.find(&format!("{}{}", "pub async fn live_", "match("))).unwrap();
+            let body = &src[from..from + src[from..].find("
+}
+").unwrap()];
+            for banned in ["tracing::", "println!", "eprintln!", "format!(\"{token", "{token:?}", "{t:?}", "dbg!"] {
+                assert!(!body.contains(banned), "{name}: the snapshot path must not log ({banned})");
+            }
+        }
     }
 
     #[test]
     fn snapshot_200_returns_the_body() {
         let url = format!("https://api.test/v1/live/{ID}");
         let http = FakeHttp::default().reply(&url, 200, r#"{"id":"x","clock":"Q3 04:12"}"#);
-        assert_eq!(snapshot(&http, ORIGIN, ID).unwrap(), Some(serde_json::json!({"id":"x","clock":"Q3 04:12"})));
+        assert_eq!(snapshot(&http, ORIGIN, None, ID).unwrap(), Some(serde_json::json!({"id":"x","clock":"Q3 04:12"})));
     }
 
     #[test]
     fn a_path_traversal_id_is_refused_and_no_request_is_made() {
-        assert_eq!(snapshot(&NoCalls, ORIGIN, "../x").unwrap_err(), LiveError::BadId);
+        assert_eq!(snapshot(&NoCalls, ORIGIN, None, "../x").unwrap_err(), LiveError::BadId);
     }
 
     #[test]
     fn an_uppercase_uuid_is_refused_canonical_lowercase_only() {
         let upper = ID.to_ascii_uppercase();
-        assert_eq!(snapshot(&NoCalls, ORIGIN, &upper).unwrap_err(), LiveError::BadId);
+        assert_eq!(snapshot(&NoCalls, ORIGIN, None, &upper).unwrap_err(), LiveError::BadId);
     }
 
     #[test]
@@ -346,7 +383,7 @@ mod tests {
         assert_eq!(list(&http, ORIGIN).unwrap_err(), LiveError::RateLimited);
         let url = format!("https://api.test/v1/live/{ID}");
         let http = FakeHttp::default().reply(&url, 429, "");
-        assert_eq!(snapshot(&http, ORIGIN, ID).unwrap_err(), LiveError::RateLimited);
+        assert_eq!(snapshot(&http, ORIGIN, None, ID).unwrap_err(), LiveError::RateLimited);
     }
 
     #[test]

@@ -37,7 +37,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 
 use crate::manifest::Sha256Hex;
 use crate::net::Http;
-use crate::origin::{blob_path, BLOB_DIR, RELEASE_FILE, SIGNATURE_FILE};
+use crate::origin::{blob_path, BLOB_DIR, PRIVATE_BLOB_DIR, RELEASE_FILE, SIGNATURE_FILE};
 use crate::publish::journal::JOURNAL_FILE;
 use crate::publish::{err, io_err, out, refuse, thousands, Event, Outcome, Sink, COMPONENTS_DIR};
 use crate::{Error, Result};
@@ -51,6 +51,11 @@ type HmacSha256 = Hmac<Sha256>;
 /// request path from the object key alone; nothing here inserts `bucket`
 /// into it (a later task's caller decides whether the key it passes already
 /// carries a bucket path segment).
+///
+/// `Clone` so a caller can derive the private league bucket from the public
+/// one (same endpoint and credentials, another name). The hand-written
+/// `Debug` below still keeps the secret out of every print.
+#[derive(Clone)]
 pub struct Bucket {
     pub endpoint: String,
     pub bucket: String,
@@ -611,6 +616,109 @@ pub fn plan_origin(origin: &Path, already: &dyn Fn(&str) -> Option<u64>) -> Resu
         }
     }
 
+    Ok(plan)
+}
+
+/// A bucket name goes straight into the path-style request path, so only a
+/// canonical S3 name is allowed: lowercase letters, digits and hyphens, 3 to
+/// 63 characters, starting and ending with a letter or digit, no slash, dot
+/// or whitespace. Nothing is trimmed. The one rule `rebornctl publish
+/// upload` and the Publisher's League files page both use.
+pub fn valid_bucket_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    let edge = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    (3..=63).contains(&b.len()) && edge(b[0]) && edge(b[b.len() - 1]) && b.iter().all(|&c| edge(c) || c == b'-')
+}
+
+/// May members-only blobs go to `name`? Only a canonical bucket name
+/// ([`valid_bucket_name`]) that is neither the production bucket
+/// ([`crate::publish::vault::PRODUCTION_BUCKET`]) nor any of `public`, the
+/// public buckets the caller knows it publishes to. The reason names the
+/// bucket, so a typo can never quietly send league blobs where the CDN
+/// serves them.
+pub fn check_private_bucket(name: &str, public: &[&str]) -> std::result::Result<(), String> {
+    if !valid_bucket_name(name) {
+        return Err(format!(
+            "{name:?} is not a bucket name (lowercase letters, digits and hyphens, 3 to 63 characters)."
+        ));
+    }
+    if name == crate::publish::vault::PRODUCTION_BUCKET || public.contains(&name) {
+        return Err(format!("{name} is the PUBLIC bucket. Members-only blobs never go there."));
+    }
+    Ok(())
+}
+
+/// May members-only blobs be sent to `endpoint`? Only `https://<host>`:
+/// no path, query, fragment, port or user-info, so the bucket can only come
+/// from the path-style request path. And the host must not start with a
+/// label naming any of `buckets` (the private bucket, the public buckets,
+/// [`crate::publish::vault::PRODUCTION_BUCKET`] is always added): a
+/// virtual-hosted endpoint such as `reborn-content.<account>.r2.cloudflarestorage.com`
+/// would route the upload to THAT bucket whatever the path says.
+pub fn check_private_endpoint(endpoint: &str, buckets: &[&str]) -> std::result::Result<(), String> {
+    let Some(host) = endpoint.strip_prefix("https://") else {
+        return Err(format!("The private upload endpoint {endpoint:?} must start with https://."));
+    };
+    // The uploader tolerates exactly one trailing slash; so does the check.
+    let host = host.strip_suffix('/').unwrap_or(host);
+    let host_ok = !host.is_empty()
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && host.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-');
+    if !host_ok {
+        return Err(format!(
+            "The private upload endpoint {endpoint:?} must be https://<host> only: no path, query, port or user name."
+        ));
+    }
+    let first = host.split('.').next().unwrap_or_default();
+    let named = buckets
+        .iter()
+        .copied()
+        .chain(std::iter::once(crate::publish::vault::PRODUCTION_BUCKET))
+        .find(|b| !b.is_empty() && first.eq_ignore_ascii_case(b));
+    if let Some(b) = named {
+        return Err(format!(
+            "The private upload endpoint {endpoint:?} names the bucket {b} in its host. Use the account endpoint \
+             (https://<account>.r2.cloudflarestorage.com); the bucket goes in --bucket."
+        ));
+    }
+    Ok(())
+}
+
+/// The members-only blobs, for the PRIVATE bucket (`reborn-league`): every
+/// file under `<origin>/private/blobs/by-hash` the bucket does not already
+/// hold at the right length, keyed by the ordinary `blobs/by-hash/<xx>/<sha>`
+/// layout. Blobs only. The manifests and release files that name them are
+/// public and go up through [`plan_origin`] to the public bucket, after this
+/// plan has finished.
+pub fn plan_private(origin: &Path, already: &dyn Fn(&str) -> Option<u64>) -> Result<UploadPlan> {
+    let mut plan = UploadPlan::new();
+    let dir = origin.join(PRIVATE_BLOB_DIR);
+    if !dir.is_dir() {
+        return Ok(plan);
+    }
+    let mut blobs: Vec<(String, PathBuf, u64, Sha256Hex)> = Vec::new();
+    for prefix in sorted_dir_entries(&dir)? {
+        if !prefix.is_dir() {
+            continue;
+        }
+        for file in sorted_dir_entries(&prefix)? {
+            if !file.is_file() {
+                continue;
+            }
+            let name = file.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            let sha256 = Sha256Hex::parse(&name)
+                .map_err(|_| invalid(format!("{} is not a sha-256 file name; refusing to plan its upload", file.display())))?;
+            let bytes = std::fs::metadata(&file).map_err(|e| io_err(&file, e))?.len();
+            blobs.push((blob_path(&sha256), file, bytes, sha256));
+        }
+    }
+    blobs.sort_by(|a, b| a.0.cmp(&b.0));
+    for (key, from, bytes, sha256) in blobs {
+        if already(&key) != Some(bytes) {
+            plan.blob(key, from, bytes, sha256);
+        }
+    }
     Ok(plan)
 }
 
@@ -2253,6 +2361,48 @@ mod listing_tests {
     }
 
     #[test]
+    fn a_private_bucket_is_canonical_and_never_a_public_one() {
+        assert!(check_private_bucket("reborn-league", &[]).is_ok());
+        assert!(check_private_bucket("reborn-league", &["reborn-content"]).is_ok());
+        assert!(check_private_bucket("reborn-content", &[]).is_err());
+        assert!(check_private_bucket("my-public", &["my-public"]).unwrap_err().contains("PUBLIC"));
+        for bad in ["", "ab", "-reborn", "reborn-", " reborn-league", "reborn-league ", "Reborn", "a/b", "../x", "reborn.league"] {
+            assert!(check_private_bucket(bad, &[]).is_err(), "{bad:?}");
+            assert!(!valid_bucket_name(bad), "{bad:?}");
+        }
+        assert!(valid_bucket_name("reborn-content"));
+    }
+
+    #[test]
+    fn a_private_endpoint_is_https_host_only_and_never_names_a_bucket() {
+        let names = ["reborn-league", "my-public"];
+        assert!(check_private_endpoint("https://acct.r2.cloudflarestorage.com", &names).is_ok());
+        assert!(check_private_endpoint(crate::publish::vault::PRODUCTION_ENDPOINT, &names).is_ok());
+        // The uploader tolerates exactly one trailing slash, so the check does too.
+        assert!(check_private_endpoint("https://acct.r2.cloudflarestorage.com/", &names).is_ok());
+        for bad in [
+            "http://acct.r2.cloudflarestorage.com",
+            "acct.r2.cloudflarestorage.com",
+            "https://",
+            "https://acct.r2.cloudflarestorage.com//",
+            "https://acct.r2.cloudflarestorage.com/reborn-content",
+            "https://acct.r2.cloudflarestorage.com/reborn-content/",
+            "https:///",
+            "https://acct.r2.cloudflarestorage.com?x=1",
+            "https://acct.r2.cloudflarestorage.com#x",
+            "https://user:pw@acct.r2.cloudflarestorage.com",
+            "https://acct.r2.cloudflarestorage.com:443",
+            "https://reborn-content.acct.r2.cloudflarestorage.com",
+            "https://Reborn-Content.acct.r2.cloudflarestorage.com",
+            "https://reborn-league.acct.r2.cloudflarestorage.com",
+            "https://my-public.acct.r2.cloudflarestorage.com",
+            "https://.acct.r2.cloudflarestorage.com",
+        ] {
+            assert!(check_private_endpoint(bad, &names).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn a_listing_walks_every_page_and_reports_each_key_with_its_size() {
         let t = Scripted {
             replies: Mutex::new(vec![page(&[("blobs/by-hash/ab/abcd", 10), ("components/runtime-1.0.0.json", 20)], Some("tok&en=1")), page(&[("release.json", 30)], None)]),
@@ -2290,5 +2440,35 @@ mod listing_tests {
         assert_eq!(already("release.json"), Some(30));
         assert_eq!(already("missing"), None);
         assert_eq!(t.urls.lock().unwrap().len(), 1, "no HEAD followed the listing");
+    }
+
+    fn write_blob(dir: &std::path::Path, bytes: &[u8]) -> Sha256Hex {
+        let sha = Sha256Hex::from_bytes(bytes);
+        let p = dir.join(&sha.as_str()[..2]).join(sha.as_str());
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, bytes).unwrap();
+        sha
+    }
+
+    #[test]
+    fn the_public_plan_never_contains_a_private_blob() {
+        let t = tempfile::tempdir().unwrap();
+        write_blob(&t.path().join(crate::origin::PRIVATE_BLOB_DIR), b"league only");
+        let plan = plan_origin(t.path(), &|_| None).unwrap();
+        assert!(plan.is_empty(), "{:?}", plan.items().map(|i| &i.key).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn the_private_plan_holds_only_private_blobs_under_the_public_key_layout() {
+        let t = tempfile::tempdir().unwrap();
+        let public = write_blob(&t.path().join(BLOB_DIR), b"retail");
+        let private = write_blob(&t.path().join(crate::origin::PRIVATE_BLOB_DIR), b"league only");
+        let plan = plan_private(t.path(), &|_| None).unwrap();
+        let keys: Vec<&str> = plan.items().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, vec![blob_path(&private).as_str()]);
+        assert!(!keys.contains(&blob_path(&public).as_str()));
+        assert!(plan.items().all(|i| i.group == Group::Blob));
+        let already_there = plan_private(t.path(), &|k| (k == blob_path(&private)).then_some(11)).unwrap();
+        assert!(already_there.is_empty(), "a blob the bucket holds at the right length is skipped");
     }
 }

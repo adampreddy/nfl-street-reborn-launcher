@@ -71,6 +71,7 @@ pub mod ini;
 pub mod inventory;
 pub mod jsgme;
 pub mod layout;
+pub mod league_edition;
 pub mod library;
 pub mod logging;
 pub mod manifest;
@@ -898,6 +899,7 @@ mod tests {
 pub mod dolphin_preferences;
 pub mod live_plays;
 pub mod live_view;
+pub mod league_home;
 pub mod matchmaking;
 pub mod presence;
 pub mod presence_discord;

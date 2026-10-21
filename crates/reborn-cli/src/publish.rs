@@ -38,6 +38,97 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 
+/// Publish the league build (members only): the league disc and its
+/// texture folder, staged with league.json, published to the PRIVATE
+/// blob store, then a release carrying every other pin forward. This
+/// publishes to the local origin only; upload afterwards with
+/// `publish upload --private --bucket reborn-league` FIRST, then
+/// `publish upload`. If the default stage `<origin>-stage\league-game-<v>`
+/// would overlap the disc, texture folder or origin (the iso or textures
+/// sit in the origin's parent), the publish is refused: pass `--stage`
+/// somewhere outside them.
+#[derive(clap::Args, Debug)]
+pub struct LeagueGameArgs {
+    /// The league disc: a plain GameCube image with a league game id.
+    #[arg(long)]
+    iso: PathBuf,
+    /// Named after the league game id, or holding a folder that is. Only
+    /// the textures that differ from the retail pack the origin serves ship
+    /// (the launcher lays them over it), so a whole working copy is fine.
+    #[arg(long)]
+    textures: PathBuf,
+    #[arg(long)]
+    origin: PathBuf,
+    #[arg(long)]
+    version: String,
+    /// Where the component is staged. Defaults to
+    /// `<origin>-stage\league-game-<version>`; must not overlap the
+    /// origin, the disc folder or the texture folder.
+    #[arg(long)]
+    stage: Option<PathBuf>,
+    /// Defaults to one above the highest league-game sequence.
+    #[arg(long)]
+    sequence: Option<u64>,
+    /// The publisher.key file. Without it the release step is only described.
+    #[arg(long)]
+    key: Option<PathBuf>,
+    #[arg(long)]
+    release_version: Option<String>,
+    #[arg(long)]
+    release_sequence: Option<u64>,
+    /// Release notes. The notes are shown to EVERY player, including
+    /// non-members, as a "What's new" card: normally leave empty.
+    #[arg(long, conflicts_with = "notes_file")]
+    notes: Option<String>,
+    /// Release notes from a file. The notes are shown to EVERY player,
+    /// including non-members, as a "What's new" card: normally leave empty.
+    #[arg(long)]
+    notes_file: Option<PathBuf>,
+    /// Stage, publish and sign. Without this everything is checked and
+    /// nothing is written.
+    #[arg(long)]
+    apply: bool,
+}
+
+/// Publish the league seed (members only) as seed/league.s01. Local
+/// origin only; upload with `publish upload --private --bucket
+/// reborn-league` first, then `publish upload`.
+#[derive(clap::Args, Debug)]
+pub struct LeagueContentArgs {
+    /// The captured league seed (a .s01 save state, at least 1 MiB).
+    #[arg(long)]
+    seed: PathBuf,
+    /// make_seed.py's capture record, when there is one.
+    #[arg(long)]
+    seed_json: Option<PathBuf>,
+    #[arg(long)]
+    origin: PathBuf,
+    #[arg(long)]
+    version: String,
+    /// Defaults to `<origin>-stage\league-content-<version>`; must not
+    /// overlap the origin or the seed's folder (pass `--stage` if so).
+    #[arg(long)]
+    stage: Option<PathBuf>,
+    #[arg(long)]
+    sequence: Option<u64>,
+    #[arg(long)]
+    key: Option<PathBuf>,
+    #[arg(long)]
+    release_version: Option<String>,
+    #[arg(long)]
+    release_sequence: Option<u64>,
+    /// Release notes. The notes are shown to EVERY player, including
+    /// non-members, as a "What's new" card: normally leave empty.
+    #[arg(long, conflicts_with = "notes_file")]
+    notes: Option<String>,
+    /// Release notes from a file. The notes are shown to EVERY player,
+    /// including non-members, as a "What's new" card: normally leave empty.
+    #[arg(long)]
+    notes_file: Option<PathBuf>,
+    #[arg(long)]
+    apply: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum PublishCommand {
     /// Generate the publisher key and the rotation key, together, once.
@@ -232,6 +323,20 @@ pub enum PublishCommand {
         #[arg(long)]
         apply: bool,
     },
+    /// Publish the league build (members only): the league disc and its
+    /// texture folder, staged with league.json, published to the PRIVATE
+    /// blob store, then a release carrying every other pin forward. This
+    /// publishes to the local origin only; upload afterwards with
+    /// `publish upload --private --bucket reborn-league` FIRST, then
+    /// `publish upload`. If the default stage `<origin>-stage\league-game-<v>`
+    /// would overlap the disc, texture folder or origin (the iso or textures
+    /// sit in the origin's parent), the publish is refused: pass `--stage`
+    /// somewhere outside them.
+    LeagueGame(Box<LeagueGameArgs>),
+    /// Publish the league seed (members only) as seed/league.s01. Local
+    /// origin only; upload with `publish upload --private --bucket
+    /// reborn-league` first, then `publish upload`.
+    LeagueContent(Box<LeagueContentArgs>),
     /// Upload the origin's plan to the bucket: every blob, then every
     /// component manifest, then the two release files, in that order, and
     /// read back what the public host serves once it is all up.
@@ -251,6 +356,12 @@ pub enum PublishCommand {
         /// Defaults to the production CDN.
         #[arg(long)]
         public_base: Option<String>,
+        /// Upload the MEMBERS-ONLY blobs (`<origin>/private/blobs`) to the
+        /// private bucket named by --bucket, and nothing else. Run this
+        /// BEFORE the public upload that carries their manifests. Never
+        /// reads back through the public CDN.
+        #[arg(long)]
+        private: bool,
         /// Write. Without this, every object the plan would send is listed
         /// and its size is given, and nothing is uploaded.
         #[arg(long)]
@@ -309,6 +420,7 @@ use reborn_core::publish::vault::{
     bucket as vault_bucket, forget_site_token, r2_access, r2_secret, site_token, store_r2_access, store_r2_secret,
     store_site_token, R2_ACCESS_ACCOUNT, R2_SECRET_ACCOUNT, SITE_TOKEN_ACCOUNT,
 };
+use reborn_core::publish::roster::Push;
 use reborn_core::publish::{Channel, Event, Outcome, Sink};
 use reborn_core::signing::Ed25519Verifier;
 
@@ -335,7 +447,37 @@ fn exit_of<T>(outcome: &Outcome<T>) -> std::process::ExitCode {
     }
 }
 
+/// What comes next after a league publish: nothing here uploads. The private
+/// store goes first so the release never points at a blob the members' store
+/// does not hold yet. An unsigned release has to be signed before either
+/// upload, so then the hint says only that.
+fn league_hint(origin: &std::path::Path, signed: bool) -> String {
+    if !signed {
+        return "The release still needs signing (no --key): run the `publish release` command printed above, then upload."
+            .to_string();
+    }
+    let o = origin.display();
+    [
+        "Next: upload the members-only blobs first, then the public files:".to_string(),
+        format!("  rebornctl publish upload --private --bucket reborn-league --origin \"{o}\""),
+        format!("  rebornctl publish upload --origin \"{o}\""),
+    ]
+    .join("\n")
+}
+
+/// Emit the hint for a landed publish; a refused or described run gets none.
+fn league_next_step(outcome: &Outcome<Push>, origin: &std::path::Path, hint: &mut dyn FnMut(&str)) {
+    if let Outcome::Done(push) = outcome {
+        hint("");
+        hint(&league_hint(origin, push.release.is_some()));
+    }
+}
+
 pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
+    run_with(cmd, &mut |line| println!("{line}"))
+}
+
+fn run_with(cmd: PublishCommand, hint: &mut dyn FnMut(&str)) -> reborn_core::Result<std::process::ExitCode> {
     let mut sink = print;
     match cmd {
         PublishCommand::Keygen { out } => Ok(exit_of(&keygen(&out, &mut sink)?)),
@@ -355,6 +497,10 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
                 }
                 return Ok(misuse());
             };
+            if let Some(why) = members_only_component_refusal(id.as_str()) {
+                eprintln!("{why}");
+                return Ok(misuse());
+            }
             let spec = match install_root.as_deref() {
                 Some(given) => ComponentSpec::with_install_root(id, &version, sequence, given),
                 None => ComponentSpec::new(id, &version, sequence),
@@ -501,13 +647,82 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
             let log = ScanLog::new();
             Ok(exit_of(&stage_game_full(&req, &log as &dyn ScanObserver, &mut sink)?))
         }
+        PublishCommand::LeagueGame(args) => {
+            let LeagueGameArgs {
+                iso,
+                textures,
+                origin,
+                version,
+                stage,
+                sequence,
+                key,
+                release_version,
+                release_sequence,
+                notes,
+                notes_file,
+                apply,
+            } = *args;
+            let notes = read_notes(notes, notes_file.as_deref())?;
+            let req = reborn_core::publish::league::LeagueGameRequest {
+                iso: &iso,
+                textures: &textures,
+                version: &version,
+                stage: stage.as_deref(),
+                origin: &origin,
+                sequence,
+                key: key.as_deref(),
+                release_version: release_version.as_deref(),
+                release_sequence,
+                notes: notes.as_deref(),
+                apply,
+            };
+            let log = ScanLog::new();
+            let outcome = reborn_core::publish::league::publish_league_game(&req, &log as &dyn ScanObserver, &mut sink)?;
+            league_next_step(&outcome, &origin, hint);
+            Ok(exit_of(&outcome))
+        }
+        PublishCommand::LeagueContent(args) => {
+            let LeagueContentArgs {
+                seed,
+                seed_json,
+                origin,
+                version,
+                stage,
+                sequence,
+                key,
+                release_version,
+                release_sequence,
+                notes,
+                notes_file,
+                apply,
+            } = *args;
+            let notes = read_notes(notes, notes_file.as_deref())?;
+            let req = reborn_core::publish::league::LeagueContentRequest {
+                seed: &seed,
+                seed_json: seed_json.as_deref(),
+                version: &version,
+                stage: stage.as_deref(),
+                origin: &origin,
+                sequence,
+                key: key.as_deref(),
+                release_version: release_version.as_deref(),
+                release_sequence,
+                notes: notes.as_deref(),
+                apply,
+            };
+            let log = ScanLog::new();
+            let outcome = reborn_core::publish::league::publish_league_content(&req, &log as &dyn ScanObserver, &mut sink)?;
+            league_next_step(&outcome, &origin, hint);
+            Ok(exit_of(&outcome))
+        }
         PublishCommand::Upload {
             origin,
             endpoint,
             bucket,
             public_base,
+            private,
             apply,
-        } => upload_command(&origin, endpoint.as_deref(), bucket.as_deref(), public_base.as_deref(), apply, &mut sink),
+        } => upload_command(&origin, endpoint.as_deref(), bucket.as_deref(), public_base.as_deref(), private, apply, &mut sink),
         PublishCommand::Status { origin, origin_base, launcher } => {
             status_command(origin.as_deref(), origin_base.as_deref(), launcher.as_deref())
         }
@@ -520,6 +735,97 @@ pub fn run(cmd: PublishCommand) -> reborn_core::Result<std::process::ExitCode> {
     }
 }
 
+/// Which plan an upload sends.
+#[derive(Debug, PartialEq, Eq)]
+enum PlanKind {
+    Origin,
+    Private,
+}
+
+/// Everything `publish upload` decides from its flags, before the vault is
+/// touched.
+#[derive(Debug, PartialEq, Eq)]
+struct Target {
+    /// The bucket to write to; `None` keeps the production default.
+    bucket: Option<String>,
+    plan: PlanKind,
+    /// The public host to read back from; always `None` for a private upload.
+    read_back: Option<String>,
+}
+
+/// The canonical-name rule lives in the core, shared with the Publisher's
+/// League files page.
+use reborn_core::publish::upload::{check_private_bucket, valid_bucket_name};
+
+/// Decide the bucket, the plan and the read-back from the flags. The public
+/// bucket is refused for a private upload by name, so a typo can never send
+/// league blobs where the CDN serves them.
+fn upload_target(private: bool, bucket: Option<&str>, public_base: Option<&str>) -> Result<Target, String> {
+    if let Some(name) = bucket {
+        if !valid_bucket_name(name) {
+            return Err(format!("--bucket {name:?} is not a bucket name (lowercase letters, digits and hyphens, 3 to 63 characters)."));
+        }
+    }
+    if !private {
+        let read_back = public_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
+        return Ok(Target { bucket: bucket.map(str::to_string), plan: PlanKind::Origin, read_back: Some(read_back) });
+    }
+    let Some(name) = bucket else {
+        return Err("--private needs --bucket <private bucket>, for example --bucket reborn-league.".to_string());
+    };
+    if public_base.is_some() {
+        return Err("--private never reads back through a public host; drop --public-base.".to_string());
+    }
+    check_private_bucket(name, &[])?;
+    Ok(Target { bucket: Some(name.to_string()), plan: PlanKind::Private, read_back: None })
+}
+
+/// `publish component` refuses the members-only components: their blobs
+/// belong in the PRIVATE store, which only the league commands write.
+fn members_only_component_refusal(name: &str) -> Option<String> {
+    ComponentId::parse(name).filter(|id| id.is_members_only())?;
+    Some(format!(
+        "--component {name} is members only and cannot be published with `publish component`: its blobs must go to \
+         the private store. Use `rebornctl publish {name}` instead."
+    ))
+}
+
+/// For a private upload, the final endpoint (vault or `--endpoint`) must be
+/// `https://<host>` with no bucket in the host: neither the private bucket,
+/// the vault's public bucket, nor the production bucket. A public upload is
+/// not checked here.
+fn check_target_endpoint(target: &Target, endpoint: &str, vault_public_bucket: &str) -> Result<(), String> {
+    if target.plan != PlanKind::Private {
+        return Ok(());
+    }
+    let private = target.bucket.as_deref().unwrap_or_default();
+    reborn_core::publish::upload::check_private_endpoint(endpoint, &[private, vault_public_bucket])
+}
+
+/// The warning a PUBLIC upload prints when the origin's release pins a
+/// members-only component: its blobs are only in the private store, so the
+/// private upload has to have run first. `None` when there is no readable
+/// release or it pins none.
+fn members_only_warning(origin: &Path) -> Option<String> {
+    let bytes = std::fs::read(origin.join(reborn_core::origin::RELEASE_FILE)).ok()?;
+    let release = reborn_core::manifest::Release::parse(&bytes).ok()?;
+    let pinned: Vec<&str> = release
+        .components
+        .keys()
+        .map(String::as_str)
+        .filter(|n| ComponentId::parse(n).is_some_and(|id| id.is_members_only()))
+        .collect();
+    if pinned.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Warning: this release pins members-only {}. Their blobs are not in this upload; make sure the private upload \
+         ran first: rebornctl publish upload --private --bucket reborn-league --origin \"{}\" --apply",
+        pinned.join(", "),
+        origin.display()
+    ))
+}
+
 /// Build the bucket to upload to (the vault's credentials, with `--endpoint`
 /// and `--bucket` overriding its address), plan the origin against what the
 /// bucket already holds, and upload it.
@@ -528,9 +834,17 @@ fn upload_command(
     endpoint: Option<&str>,
     bucket_name: Option<&str>,
     public_base: Option<&str>,
+    private: bool,
     apply: bool,
     sink: Sink<'_>,
 ) -> reborn_core::Result<std::process::ExitCode> {
+    let target = match upload_target(private, bucket_name, public_base) {
+        Ok(t) => t,
+        Err(why) => {
+            eprintln!("{why}");
+            return Ok(misuse());
+        }
+    };
     let platform = reborn_core::Platform::detect();
     let Some(mut bucket) = vault_bucket(&platform)? else {
         eprintln!("R2 credentials are not stored in the vault ({R2_ACCESS_ACCOUNT}, {R2_SECRET_ACCOUNT}).");
@@ -542,24 +856,35 @@ fn upload_command(
     if let Some(e) = endpoint {
         bucket.endpoint = e.to_string();
     }
-    if let Some(b) = bucket_name {
-        bucket.bucket = b.to_string();
+    if let Err(why) = check_target_endpoint(&target, &bucket.endpoint, &bucket.bucket) {
+        eprintln!("{why}");
+        return Ok(misuse());
+    }
+    if let Some(b) = &target.bucket {
+        bucket.bucket = b.clone();
+    }
+    if target.plan == PlanKind::Origin {
+        if let Some(w) = members_only_warning(origin) {
+            sink(Event::err(w));
+        }
     }
 
     let transport = UreqTransport::new();
     let (already, how) = reborn_core::publish::upload::already_on_bucket(&transport, &bucket)?;
     sink(Event::out(how));
-    let plan = plan_origin(origin, &*already)?;
+    let plan = match target.plan {
+        PlanKind::Private => reborn_core::publish::upload::plan_private(origin, &*already)?,
+        PlanKind::Origin => plan_origin(origin, &*already)?,
+    };
 
     let http = reborn_core::net::UreqHttp::new(concat!("rebornctl/", env!("CARGO_PKG_VERSION")));
-    let public_base = public_base.map(str::to_string).unwrap_or_else(|| reborn_core::origin::DEFAULT_ORIGIN.to_string());
     let req = UploadRequest {
         bucket: &bucket,
         plan: &plan,
         multipart_threshold: DEFAULT_MULTIPART_THRESHOLD,
         part_size: DEFAULT_PART_SIZE,
         attempts: DEFAULT_ATTEMPTS,
-        public_base: Some(&public_base),
+        public_base: target.read_back.as_deref(),
         apply,
     };
     Ok(exit_of(&run_upload(&transport, &http, &req, sink)?))
@@ -722,5 +1047,350 @@ fn read_notes(notes: Option<String>, file: Option<&std::path::Path>) -> reborn_c
             .map(Some)
             .map_err(|e| reborn_core::Error::Io { path: p.to_path_buf(), source: e }),
         None => Ok(notes),
+    }
+}
+
+#[cfg(test)]
+mod private_upload_tests {
+    use super::{upload_target, PlanKind};
+
+    #[test]
+    fn a_private_upload_needs_a_named_bucket() {
+        assert!(upload_target(true, None, None).is_err());
+        assert!(upload_target(true, Some("  "), None).is_err());
+    }
+
+    #[test]
+    fn a_private_upload_never_reads_back_through_the_public_cdn() {
+        assert!(upload_target(true, Some("reborn-league"), Some("https://files.nflstreetreborn.com/")).is_err());
+    }
+
+    #[test]
+    fn a_private_upload_refuses_the_public_bucket_however_it_is_spelled() {
+        for bad in [
+            "reborn-content",
+            "reborn-content/",
+            "reborn-content/x",
+            "Reborn-Content",
+            "reborn-league/../reborn-content",
+            " reborn-league",
+            "reborn-league ",
+            "reborn.league",
+            "-reborn",
+            "ab",
+        ] {
+            assert!(upload_target(true, Some(bad), None).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_league_bucket_is_private_and_never_read_back() {
+        let t = upload_target(true, Some("reborn-league"), None).unwrap();
+        assert_eq!(t.bucket.as_deref(), Some("reborn-league"));
+        assert_eq!(t.plan, PlanKind::Private);
+        assert_eq!(t.read_back, None);
+    }
+
+    #[test]
+    fn a_plain_upload_keeps_the_production_bucket_and_reads_back() {
+        let t = upload_target(false, Some("reborn-content"), None).unwrap();
+        assert_eq!(t.bucket.as_deref(), Some("reborn-content"));
+        assert_eq!(t.plan, PlanKind::Origin);
+        assert!(t.read_back.is_some());
+        assert!(upload_target(false, None, Some("https://x.test/")).unwrap().read_back.as_deref() == Some("https://x.test/"));
+    }
+
+    #[test]
+    fn a_private_upload_refuses_an_endpoint_that_is_not_https_host_only_or_names_a_bucket() {
+        let t = upload_target(true, Some("reborn-league"), None).unwrap();
+        assert!(super::check_target_endpoint(&t, "https://acct.r2.cloudflarestorage.com", "reborn-content").is_ok());
+        for bad in [
+            "http://acct.r2.cloudflarestorage.com",
+            "https://acct.r2.cloudflarestorage.com/reborn-content",
+            "https://acct.r2.cloudflarestorage.com?x",
+            "https://me@acct.r2.cloudflarestorage.com",
+            "https://reborn-content.acct.r2.cloudflarestorage.com",
+            "https://reborn-league.acct.r2.cloudflarestorage.com",
+            "https://vault-public.acct.r2.cloudflarestorage.com",
+        ] {
+            assert!(super::check_target_endpoint(&t, bad, "vault-public").is_err(), "{bad:?}");
+        }
+        // A public upload is not this check's business.
+        let p = upload_target(false, None, None).unwrap();
+        assert!(super::check_target_endpoint(&p, "https://reborn-content.acct.r2.cloudflarestorage.com", "reborn-content").is_ok());
+    }
+
+    #[test]
+    fn a_public_upload_warns_when_the_release_pins_a_members_only_component() {
+        let dir = std::env::temp_dir().join(format!("rebornctl-warn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(super::members_only_warning(&dir), None, "no release, no warning");
+        let pin = r#"{"url":"https://x/c.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
+        let release = |names: &[&str]| {
+            let comps: Vec<String> = names.iter().map(|n| format!("\"{n}\":{pin}")).collect();
+            format!(r#"{{"schema":"nsr.release.v1","version":"3.0.0","sequence":9,"components":{{{}}}}}"#, comps.join(","))
+        };
+        std::fs::write(dir.join("release.json"), release(&["runtime", "textures"])).unwrap();
+        assert_eq!(super::members_only_warning(&dir), None);
+        std::fs::write(dir.join("release.json"), release(&["runtime", "league-game"])).unwrap();
+        let w = super::members_only_warning(&dir).expect("a warning");
+        assert!(w.contains("league-game"), "{w}");
+        assert!(!w.contains("  "), "no run of spaces: {w}");
+        assert!(
+            w.contains("make sure the private upload ran first: rebornctl publish upload --private --bucket reborn-league"),
+            "{w}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_plain_upload_also_refuses_a_path_injecting_bucket() {
+        for bad in ["reborn-content/", "a/b", "../x", " reborn-content", "Reborn"] {
+            assert!(upload_target(false, Some(bad), None).is_err(), "{bad:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod league_tests {
+    use super::{run, run_with, PublishCommand};
+    use clap::Parser;
+    use std::path::{Path, PathBuf};
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: PublishCommand,
+    }
+
+    /// Hand rolled: `tempfile` is not a dependency of this crate.
+    struct Tmp(PathBuf);
+    impl Tmp {
+        fn new(tag: &str) -> Tmp {
+            let p = std::env::temp_dir().join(format!("rebornctl-league-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Tmp(p)
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fake_iso(path: &Path, id: &str) {
+        let mut b = vec![0u8; 0x460];
+        b[..6].copy_from_slice(id.as_bytes());
+        b[0x1C..0x20].copy_from_slice(&[0xC2, 0x33, 0x9F, 0x3D]);
+        b[0x458..0x45C].copy_from_slice(&1u32.to_be_bytes());
+        std::fs::write(path, b).unwrap();
+    }
+
+    /// <root>/discs/league.iso, <root>/tex/LGTEST/a.png, origin <root>/work/origin.
+    fn layout(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let iso = root.join("discs").join("league.iso");
+        std::fs::create_dir_all(iso.parent().unwrap()).unwrap();
+        fake_iso(&iso, "LGTEST");
+        let tex = root.join("tex");
+        std::fs::create_dir_all(tex.join("LGTEST")).unwrap();
+        std::fs::write(tex.join("LGTEST").join("a.png"), b"png").unwrap();
+        let origin = root.join("work").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        (iso, tex, origin)
+    }
+
+    fn game(iso: &Path, tex: &Path, origin: &Path, extra: &[&str]) -> PublishCommand {
+        let mut a: Vec<String> = vec![
+            "x".into(), "league-game".into(),
+            "--iso".into(), iso.display().to_string(),
+            "--textures".into(), tex.display().to_string(),
+            "--origin".into(), origin.display().to_string(),
+            "--version".into(), "2026.10.08".into(),
+        ];
+        a.extend(extra.iter().map(|s| s.to_string()));
+        Cli::try_parse_from(a).unwrap().cmd
+    }
+
+    fn code(c: std::process::ExitCode) -> String {
+        format!("{c:?}")
+    }
+
+    #[test]
+    fn league_commands_parse_with_the_contract_flags() {
+        let g = Cli::try_parse_from([
+            "x", "league-game", "--iso", "a.iso", "--textures", "t", "--origin", "o",
+            "--version", "2026.10.08", "--notes-file", "n.md", "--apply",
+        ]);
+        assert!(g.is_ok(), "{:?}", g.err());
+        let c = Cli::try_parse_from(["x", "league-content", "--seed", "league.s01", "--origin", "o", "--version", "1.0.0"]);
+        assert!(c.is_ok(), "{:?}", c.err());
+    }
+
+    #[test]
+    fn league_commands_require_origin_and_version_and_reject_both_notes() {
+        assert!(Cli::try_parse_from(["x", "league-game", "--iso", "a", "--textures", "t", "--version", "1"]).is_err());
+        assert!(Cli::try_parse_from(["x", "league-content", "--seed", "s", "--origin", "o"]).is_err());
+        assert!(Cli::try_parse_from([
+            "x", "league-content", "--seed", "s", "--origin", "o", "--version", "1",
+            "--notes", "a", "--notes-file", "b",
+        ]).is_err());
+    }
+
+    #[test]
+    fn league_game_help_says_to_pass_stage_when_the_default_is_refused() {
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        let sub = cmd.find_subcommand_mut("league-game").unwrap();
+        let help = sub.render_long_help().to_string();
+        assert!(help.contains("--stage"), "{help}");
+        assert!(help.contains("refus"), "{help}");
+        for flag in ["--iso", "--textures", "--notes-file", "--origin", "--version", "--apply"] {
+            assert!(help.contains(flag), "{flag} missing: {help}");
+        }
+    }
+
+    #[test]
+    fn publish_component_refuses_the_league_components_and_names_the_right_command() {
+        for (name, right) in [("league-game", "publish league-game"), ("league-content", "publish league-content")] {
+            let msg = super::members_only_component_refusal(name).unwrap_or_else(|| panic!("{name} not refused"));
+            assert!(msg.contains(right), "{msg}");
+            assert!(!msg.contains("  "), "no run of spaces: {msg}");
+            let t = Tmp::new(&format!("comp-{name}"));
+            let cmd = Cli::try_parse_from([
+                "x", "component", "--root", &t.0.display().to_string(), "--component", name,
+                "--version", "1.0.0", "--sequence", "1", "--origin", &t.0.join("origin").display().to_string(), "--apply",
+            ]).unwrap().cmd;
+            assert_eq!(code(run(cmd).unwrap()), code(super::misuse()), "{name}");
+            assert!(!t.0.join("origin").exists(), "{name}: nothing written");
+        }
+        assert_eq!(super::members_only_component_refusal("runtime"), None);
+    }
+
+    #[test]
+    fn league_notes_help_warns_they_reach_every_player() {
+        for name in ["league-game", "league-content"] {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            let sub = cmd.find_subcommand_mut(name).unwrap();
+            let help = sub.render_long_help().to_string();
+            let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            for flag in ["--notes <NOTES>", "--notes-file <NOTES_FILE>"] {
+                let at = flat.find(flag).unwrap_or_else(|| panic!("{name}: {flag} missing: {help}"));
+                let after = &flat[at..];
+                let end = after[flag.len()..].find(" --").map_or(after.len(), |i| i + flag.len());
+                let text = &after[..end];
+                assert!(
+                    text.contains("notes are shown to EVERY player, including non-members") && text.contains("normally leave empty"),
+                    "{name} {flag}: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dry_run_succeeds_and_writes_nothing() {
+        let t = Tmp::new("dry");
+        let (iso, tex, origin) = layout(&t.0);
+        let before = std::fs::read_dir(t.0.join("work")).unwrap().count();
+        let stage = t.0.join("stage");
+        let cmd = game(&iso, &tex, &origin, &["--stage", &stage.display().to_string()]);
+        assert_eq!(code(run(cmd).unwrap()), code(super::OK));
+        assert_eq!(std::fs::read_dir(t.0.join("work")).unwrap().count(), before);
+        assert!(!stage.exists());
+    }
+
+    #[test]
+    fn the_default_stage_is_refused_clearly_when_the_iso_sits_beside_the_origin() {
+        let t = Tmp::new("overlap");
+        let (iso, tex, _) = layout(&t.0);
+        // Origin directly beside the disc folder's contents: <root>/discs/origin,
+        // so the default <origin>-stage lands inside the disc folder.
+        let origin = t.0.join("discs").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let cmd = game(&iso, &tex, &origin, &[]);
+        assert_eq!(code(run(cmd).unwrap()), code(super::PROBLEM));
+        assert!(!t.0.join("discs").join("origin-stage").exists());
+    }
+
+    #[test]
+    fn a_non_disc_is_refused_and_a_bad_notes_file_is_an_error() {
+        let t = Tmp::new("bad");
+        let (iso, tex, origin) = layout(&t.0);
+        std::fs::write(&iso, vec![0u8; 0x440]).unwrap();
+        let stage = t.0.join("stage");
+        let s = stage.display().to_string();
+        assert_eq!(code(run(game(&iso, &tex, &origin, &["--stage", &s])).unwrap()), code(super::PROBLEM));
+        fake_iso(&iso, "LGTEST");
+        let missing = t.0.join("nope.md").display().to_string();
+        assert!(run(game(&iso, &tex, &origin, &["--stage", &s, "--notes-file", &missing])).is_err());
+    }
+
+    #[test]
+    fn league_content_dry_run_and_refusals() {
+        let t = Tmp::new("content");
+        let origin = t.0.join("work").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let seed = t.0.join("seeds").join("league.s01");
+        std::fs::create_dir_all(seed.parent().unwrap()).unwrap();
+        std::fs::write(&seed, vec![1u8; 1024 * 1024 + 8]).unwrap();
+        let stage = t.0.join("stage").display().to_string();
+        let mk = |seed: &Path| {
+            Cli::try_parse_from([
+                "x", "league-content", "--seed", &seed.display().to_string(),
+                "--origin", &origin.display().to_string(), "--version", "1.0.0", "--stage", &stage,
+            ]).unwrap().cmd
+        };
+        assert_eq!(code(run(mk(&seed)).unwrap()), code(super::OK));
+        assert!(!Path::new(&stage).exists());
+        let tiny = t.0.join("seeds").join("tiny.s01");
+        std::fs::write(&tiny, b"x").unwrap();
+        assert_eq!(code(run(mk(&tiny)).unwrap()), code(super::PROBLEM));
+    }
+
+    #[test]
+    fn a_signed_apply_prints_the_two_quoted_upload_commands_in_order() {
+        let t = Tmp::new("hint dir");
+        let (iso, tex, _) = layout(&t.0);
+        let origin = t.0.join("my work").join("origin");
+        std::fs::create_dir_all(&origin).unwrap();
+        let key = match reborn_core::publish::keys::keygen(&t.0.join("keys"), &mut |_| {}).unwrap() {
+            reborn_core::publish::Outcome::Done(w) => w.publisher_path,
+            o => panic!("{o:?}"),
+        };
+        let stage = t.0.join("stage").display().to_string();
+        let key_s = key.display().to_string();
+        let cmd = game(&iso, &tex, &origin, &[
+            "--stage", &stage, "--key", &key_s, "--release-version", "3.0.0", "--release-sequence", "1", "--apply",
+        ]);
+        let mut lines: Vec<String> = Vec::new();
+        let c = run_with(cmd, &mut |l| lines.push(l.to_string())).unwrap();
+        assert_eq!(code(c), code(super::OK));
+        let o = origin.display();
+        assert_eq!(
+            lines.join("
+"),
+            format!(
+                "\nNext: upload the members-only blobs first, then the public files:\n\
+                 \x20 rebornctl publish upload --private --bucket reborn-league --origin \"{o}\"\n\
+                 \x20 rebornctl publish upload --origin \"{o}\""
+            )
+        );
+        assert!(o.to_string().contains(' '));
+    }
+
+    #[test]
+    fn an_unsigned_apply_says_the_release_needs_signing_and_hints_no_upload() {
+        let t = Tmp::new("nokey");
+        let (iso, tex, origin) = layout(&t.0);
+        let stage = t.0.join("stage").display().to_string();
+        let cmd = game(&iso, &tex, &origin, &[
+            "--stage", &stage, "--release-version", "3.0.0", "--release-sequence", "1", "--apply",
+        ]);
+        let mut lines: Vec<String> = Vec::new();
+        run_with(cmd, &mut |l| lines.push(l.to_string())).unwrap();
+        let all = lines.join("
+");
+        assert!(all.contains("still needs signing"), "{all}");
+        assert!(!all.contains("publish upload"), "{all}");
     }
 }

@@ -337,6 +337,7 @@ mod tests {
             sequence: 1,
             install_root: DataDir::Runtime.relative().to_string(),
             customizable: false,
+            members_only: false,
             files,
         };
         let bytes = serde_json::to_vec(&component).unwrap();

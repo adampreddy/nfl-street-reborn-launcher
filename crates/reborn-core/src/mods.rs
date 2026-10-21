@@ -574,6 +574,15 @@ impl ModPackage {
             .collect()
     }
 
+    /// Which of this package's payloads a tree for `game` composes: its own when it has one, else `fallback`'s,
+    /// else none.
+    pub fn payload_game(&self, game: &GameId, fallback: Option<&GameId>) -> Option<GameId> {
+        if self.targets_game(game) {
+            return Some(game.clone());
+        }
+        fallback.filter(|f| self.targets_game(f)).cloned()
+    }
+
     /// Where the extracted payload for one file lives.
     pub fn payload_file(&self, packages_root: &Path, file: &ModFile) -> PathBuf {
         let mut path = packages_root
@@ -669,13 +678,20 @@ impl Conflict {
 /// Pairwise, and every overlapping path is listed rather than summarized,
 /// because the whole point is that the user is told which files are contested
 /// instead of having the launcher choose.
-pub fn detect_conflicts(packages: &[ModPackage], game: &GameId) -> Vec<Conflict> {
+///
+/// `fallback` is the build whose payload a package without one of its own
+/// contributes (see [`payload_fallback_for`]); each package is compared by the
+/// tails of the payload it actually composes.
+pub fn detect_conflicts(packages: &[ModPackage], game: &GameId, fallback: Option<&GameId>) -> Vec<Conflict> {
     let mut out = Vec::new();
-    let relevant: Vec<&ModPackage> = packages.iter().filter(|p| p.targets_game(game)).collect();
+    let relevant: Vec<(&ModPackage, GameId)> = packages
+        .iter()
+        .filter_map(|p| p.payload_game(game, fallback).map(|g| (p, g)))
+        .collect();
 
-    for (i, a) in relevant.iter().enumerate() {
-        for b in relevant.iter().skip(i + 1) {
-            let (pa, pb) = (a.composed_paths(game), b.composed_paths(game));
+    for (i, (a, a_payload)) in relevant.iter().enumerate() {
+        for (b, b_payload) in relevant.iter().skip(i + 1) {
+            let (pa, pb) = (a.composed_paths(a_payload), b.composed_paths(b_payload));
             let overlap: Vec<String> = pa.intersection(&pb).map(|s| s.to_string()).collect();
 
             if !overlap.is_empty() {
@@ -746,7 +762,7 @@ pub struct ExclusiveGroup {
 /// one group even when A and C share no path, because a pick-one control has to
 /// offer a single choice rather than a puzzle.
 pub fn exclusive_groups(packages: &[ModPackage], game: &GameId) -> Vec<ExclusiveGroup> {
-    let conflicts = detect_conflicts(packages, game);
+    let conflicts = detect_conflicts(packages, game, payload_fallback_for(game).as_ref());
     if conflicts.is_empty() {
         return Vec::new();
     }
@@ -1297,6 +1313,8 @@ pub struct PlannedEntry {
 pub struct CompositionPlan {
     pub game: GameId,
     pub pristine_root: PathBuf,
+    /// See [`ComposeRequest::base_root`].
+    pub base_root: Option<PathBuf>,
     pub composed_root: PathBuf,
     /// See [`ComposeRequest::pristine_identity`].
     pub pristine_identity: Option<String>,
@@ -1355,6 +1373,7 @@ impl CompositionPlan {
         ComposedRecord {
             game: self.game.clone(),
             pristine_root: self.pristine_root.clone(),
+            base_root: self.base_root.clone(),
             pristine_identity: self.pristine_identity.clone(),
             activation: self.activation.clone(),
             total_entries: self.entries.len() as u64,
@@ -1369,6 +1388,12 @@ impl CompositionPlan {
 pub struct ComposeRequest {
     pub game: GameId,
     pub pristine_root: PathBuf,
+    /// A tree laid down UNDER `pristine_root`, or `None`. The league build ships only the textures it changes and
+    /// borrows the rest of the retail pack (Adam 10-16: "idk if we want to download 10 more GB for people"), so its
+    /// tree is the retail pack, then the league files, then the mods. A league file replaces every base file with
+    /// its texture name, wherever it sits, because Dolphin keys a pack by file name and keeps one of two at random;
+    /// and it beats a mod with that name too ("league textures win"). See [`base_root_for`].
+    pub base_root: Option<PathBuf>,
     pub composed_root: PathBuf,
     pub packages_root: PathBuf,
     /// In activation order. The order is recorded and displayed, and it never
@@ -1380,6 +1405,9 @@ pub struct ComposeRequest {
     /// Recorded in the composed tree, so a swapped pristine folder with the
     /// same names and count still rebuilds; see [`pristine_identity`].
     pub pristine_identity: Option<String>,
+    /// The build whose payload a package without one for `game` contributes;
+    /// see [`payload_fallback_for`].
+    pub payload_fallback: Option<GameId>,
 }
 
 impl ComposeRequest {
@@ -1392,13 +1420,45 @@ impl ComposeRequest {
     ) -> Result<Self> {
         Ok(Self {
             pristine_root: pristine_root(platform, &game)?,
+            base_root: base_root_for(platform, &game)?,
             composed_root: composed_root(user_dir, &game),
             packages_root: packages_root(platform)?,
             pristine_identity: pristine_identity(platform, &game),
+            payload_fallback: payload_fallback_for(&game),
             game,
             packages,
         })
     }
+}
+
+/// The tree a build's own textures are laid over: the retail pack for the league build (it ships only what it
+/// changes), nothing for every other build.
+pub fn base_root_for(platform: &Platform, game: &GameId) -> Result<Option<PathBuf>> {
+    if game.as_str() != crate::league_edition::LEAGUE_GAME_ID {
+        return Ok(None);
+    }
+    let retail = GameId::parse(crate::league_edition::RETAIL_GAME_ID)
+        .map_err(|e| invalid(format!("the retail game id does not parse: {e}")))?;
+    Ok(Some(pristine_root(platform, &retail)?))
+}
+
+/// A texture's name as Dolphin keys it: the file name without its extension, case folded. Dolphin loads a `.dds`
+/// and a `.png` of one name as the same texture and keeps one of them at random, so `x.png` replaces `x.dds`.
+fn texture_name(relative: &str) -> String {
+    let file = relative.rsplit('/').next().unwrap_or(relative);
+    let stem = match file.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.contains(' ') => stem,
+        _ => file,
+    };
+    stem.to_lowercase()
+}
+
+/// The build whose mod payloads a tree borrows when a package has none of its own: the league build borrows retail
+/// (one shared mod list, spec 2026-10-08 v2). Every other tree composes only what was made for it.
+pub fn payload_fallback_for(game: &GameId) -> Option<GameId> {
+    (game.as_str() == crate::league_edition::LEAGUE_GAME_ID)
+        .then(|| GameId::parse(crate::league_edition::RETAIL_GAME_ID).ok())
+        .flatten()
 }
 
 /// `library/textures/<gameid>/`, the read-only tree.
@@ -1418,6 +1478,10 @@ impl ComposeRequest {
 /// So a migrated tree is a baseline for importing someone's JSGME mods, not
 /// a source of textures that outranks the release.
 pub fn pristine_root(platform: &Platform, game: &GameId) -> Result<PathBuf> {
+    if game.as_str() == crate::league_edition::LEAGUE_GAME_ID {
+        // The league files inside its component (Plan 4 layout); the retail pack under them is `base_root_for`.
+        return Ok(crate::league_edition::league_textures_root(&platform.paths.data_root()?));
+    }
     let in_data = platform
         .data_dir(DataDir::LibraryTextures)?
         .join(game.as_str());
@@ -1647,13 +1711,25 @@ pub fn old_composed_root(platform: &Platform, game: &GameId) -> Result<PathBuf> 
 /// used to notice, and the game kept the old bytes. A tree without a pointer
 /// is never swapped by anything, so `None` is a stable identity.
 pub fn pristine_identity(platform: &Platform, game: &GameId) -> Option<String> {
-    if game.as_str() != "GN7E69" {
-        return None;
+    let installed = |component: &str| -> Option<String> {
+        let data = platform.paths.data_root().ok()?;
+        let layout = crate::content::ContentLayout::new(&data);
+        let pointer = crate::content::Pointer::load(&layout.pointer_path(component)).ok().flatten()?;
+        Some(format!("{}#{}", pointer.current.version, pointer.current.sequence))
+    };
+    match game.as_str() {
+        "GN7E69" => installed("textures"),
+        // The league tree links into two folders an update swaps: its own, and the retail pack under it. Either
+        // one changing must rebuild it.
+        id if id == crate::league_edition::LEAGUE_GAME_ID => {
+            let league = installed("league-game")?;
+            Some(match installed("textures") {
+                Some(retail) => format!("{league}+textures {retail}"),
+                None => league,
+            })
+        }
+        _ => None,
     }
-    let data = platform.paths.data_root().ok()?;
-    let layout = crate::content::ContentLayout::new(&data);
-    let pointer = crate::content::Pointer::load(&layout.pointer_path("textures")).ok().flatten()?;
-    Some(format!("{}#{}", pointer.current.version, pointer.current.sequence))
 }
 
 /// Whether the texture pack Dolphin will read is actually there, and which
@@ -1944,6 +2020,9 @@ pub struct OverlayRecord {
 pub struct ComposedRecord {
     pub game: GameId,
     pub pristine_root: PathBuf,
+    /// See [`ComposeRequest::base_root`]. Absent for every tree without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_root: Option<PathBuf>,
     /// Which pristine tree the links point into. Absent in records written
     /// before 2026-09-12, which reads as "unknown" and differs from any
     /// planned identity, so those trees rebuild once.
@@ -2007,6 +2086,10 @@ pub enum Discrepancy {
         recorded: PathBuf,
         planned: PathBuf,
     },
+    BaseRootDiffers {
+        recorded: Option<PathBuf>,
+        planned: Option<PathBuf>,
+    },
     /// The pristine tree was swapped (a texture update), so the links point
     /// at the old bytes even when every name and count still matches.
     PristineIdentityDiffers {
@@ -2067,6 +2150,10 @@ impl Discrepancy {
                 recorded.display(),
                 planned.display()
             ),
+            Discrepancy::BaseRootDiffers { recorded, planned } => {
+                let shown = |p: &Option<PathBuf>| p.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "none".into());
+                format!("the tree was laid over {}, not {}.", shown(recorded), shown(planned))
+            }
             Discrepancy::PristineIdentityDiffers { recorded, planned } => format!(
                 "the pristine textures changed (was {}, now {})",
                 recorded.as_deref().unwrap_or("unknown"),
@@ -2181,7 +2268,22 @@ impl Composer {
         }
 
         // The read-only rule, enforced before anything else, because every
-        // other check is irrelevant if the destination is the source.
+        // other check is irrelevant if the destination is the source. The base
+        // tree is a source too, held to the same rule.
+        if let Some(base) = &req.base_root {
+            if contains_or_equals(base, &req.composed_root) {
+                return Ok(Composition::Refused(ComposeRefusal::ComposedInsidePristine {
+                    pristine: base.clone(),
+                    composed: req.composed_root.clone(),
+                }));
+            }
+            if contains_or_equals(&req.composed_root, base) {
+                return Ok(Composition::Refused(ComposeRefusal::PristineInsideComposed {
+                    pristine: base.clone(),
+                    composed: req.composed_root.clone(),
+                }));
+            }
+        }
         if contains_or_equals(&req.pristine_root, &req.composed_root) {
             return Ok(Composition::Refused(
                 ComposeRefusal::ComposedInsidePristine {
@@ -2238,7 +2340,7 @@ impl Composer {
         // did not compose is the player's, and this would have written into it.
         report_heal(&req.composed_root, heal_nested_game_folder(&req.composed_root));
 
-        let conflicts = detect_conflicts(&req.packages, &req.game);
+        let conflicts = detect_conflicts(&req.packages, &req.game, req.payload_fallback.as_ref());
         let (hard, soft): (Vec<Conflict>, Vec<Conflict>) =
             conflicts.into_iter().partition(|c| c.is_hard());
         if !hard.is_empty() {
@@ -2248,6 +2350,39 @@ impl Composer {
         }
 
         let mut entries: BTreeMap<String, PlannedEntry> = BTreeMap::new();
+        // The texture names the build's own tree holds, when it is laid over a
+        // base: a base file or a mod file with one of these names is left out.
+        let mut own_names: BTreeSet<String> = BTreeSet::new();
+        if let Some(base_root) = &req.base_root {
+            if !base_root.is_dir() {
+                return Ok(Composition::Refused(ComposeRefusal::NoPristineTree { path: base_root.clone() }));
+            }
+            report_heal(base_root, heal_nested_game_folder(base_root));
+            let base = PristineTree::open(base_root)?.list()?;
+            if !base.unsupported.is_empty() {
+                return Ok(Composition::Refused(ComposeRefusal::UnsupportedPristineEntries { paths: base.unsupported }));
+            }
+            if base.files.is_empty() {
+                return Ok(Composition::Refused(ComposeRefusal::NoPristineFiles { path: base_root.clone() }));
+            }
+            own_names = listing.files.iter().map(|f| texture_name(&f.relative)).collect();
+            for file in &base.files {
+                if file.relative == COMPOSED_MARKER || own_names.contains(&texture_name(&file.relative)) {
+                    continue;
+                }
+                entries.insert(
+                    file.relative.clone(),
+                    PlannedEntry {
+                        relative: file.relative.clone(),
+                        bytes: file.bytes,
+                        source: EntrySource::Pristine {
+                            path: join_relative(base_root, &file.relative),
+                            modified: file.modified,
+                        },
+                    },
+                );
+            }
+        }
         for file in &listing.files {
             if file.relative == COMPOSED_MARKER {
                 return Ok(Composition::Refused(ComposeRefusal::ReservedName {
@@ -2270,11 +2405,15 @@ impl Composer {
         let mut activation = Vec::new();
         let mut not_targeted = Vec::new();
         for package in &req.packages {
-            if !package.targets_game(&req.game) {
+            let Some(payload) = package.payload_game(&req.game, req.payload_fallback.as_ref()) else {
                 not_targeted.push(package.id.clone());
                 continue;
-            }
-            for file in package.files_for(&req.game) {
+            };
+            for file in package.files_for(&payload) {
+                // The build's own textures win over a mod (Adam 10-16).
+                if own_names.contains(&texture_name(file.path.tail())) {
+                    continue;
+                }
                 let source = package.payload_file(&req.packages_root, file);
                 let meta = match std::fs::metadata(&source) {
                     Ok(m) if m.is_file() => m,
@@ -2323,17 +2462,17 @@ impl Composer {
         // A cross-volume hardlink cannot work, so there is no point attempting
         // one. Within a volume it can still fail, on exFAT and FAT32, and that
         // is handled at composition time.
-        let method = match platform
-            .files
-            .same_volume(&req.pristine_root, &req.composed_root)
-        {
-            Ok(true) => LinkMethod::Hardlink,
-            _ => LinkMethod::Copy,
+        let linkable = |from: &Path| matches!(platform.files.same_volume(from, &req.composed_root), Ok(true));
+        let method = if linkable(&req.pristine_root) && req.base_root.as_deref().is_none_or(linkable) {
+            LinkMethod::Hardlink
+        } else {
+            LinkMethod::Copy
         };
 
         Ok(Composition::Planned(CompositionPlan {
             game: req.game.clone(),
             pristine_root: req.pristine_root.clone(),
+            base_root: req.base_root.clone(),
             composed_root: req.composed_root.clone(),
             pristine_identity: req.pristine_identity.clone(),
             method,
@@ -2364,9 +2503,18 @@ impl Composer {
         // Re-checked rather than trusted from the plan. A plan is a value with
         // public fields that can be built or edited anywhere, and this is the
         // check whose failure destroys the only copy of the originals.
-        if contains_or_equals(&plan.pristine_root, &plan.composed_root)
-            || contains_or_equals(&plan.composed_root, &plan.pristine_root)
-        {
+        let overlaps = |source: &Path| {
+            contains_or_equals(source, &plan.composed_root) || contains_or_equals(&plan.composed_root, source)
+        };
+        if let Some(base) = plan.base_root.as_deref().filter(|b| overlaps(b)) {
+            return Err(refused(format!(
+                "refusing to compose: the composed tree {} and the base tree {} overlap, so composing would \
+                 write into or delete the only copy of the original textures",
+                plan.composed_root.display(),
+                base.display()
+            )));
+        }
+        if overlaps(&plan.pristine_root) {
             return Err(refused(format!(
                 "refusing to compose: the composed tree {} and the pristine tree \
                  {} overlap, so composing would write into or delete the only \
@@ -2624,6 +2772,17 @@ impl Composer {
                 planned: plan.pristine_root.clone(),
             });
         }
+        let same_base = match (&record.base_root, &plan.base_root) {
+            (None, None) => true,
+            (Some(a), Some(b)) => same_path(a, b),
+            _ => false,
+        };
+        if !same_base {
+            found.push(Discrepancy::BaseRootDiffers {
+                recorded: record.base_root.clone(),
+                planned: plan.base_root.clone(),
+            });
+        }
         if record.pristine_identity != plan.pristine_identity {
             found.push(Discrepancy::PristineIdentityDiffers {
                 recorded: record.pristine_identity.clone(),
@@ -2843,6 +3002,8 @@ fn write_marker_durably(composed_root: &Path, marker: &ComposedMarker) -> Result
 pub struct SyncRequest {
     pub game: GameId,
     pub pristine_root: PathBuf,
+    /// See [`ComposeRequest::base_root`].
+    pub base_root: Option<PathBuf>,
     pub composed_root: PathBuf,
     pub packages_root: PathBuf,
     pub activation_file: PathBuf,
@@ -2854,6 +3015,8 @@ pub struct SyncRequest {
     pub old_composed_root: Option<PathBuf>,
     /// See [`ComposeRequest::pristine_identity`].
     pub pristine_identity: Option<String>,
+    /// See [`payload_fallback_for`].
+    pub payload_fallback: Option<GameId>,
     /// Compose THIS list instead of reading `activation.json`, leaving the
     /// file as it is. `Some(vec![])` is "start with mods disabled": the
     /// game loads the pristine tree once, and the player's selection is
@@ -2894,12 +3057,14 @@ impl SyncRequest {
     pub fn in_data_root(platform: &Platform, game: GameId, user_dir: &Path) -> Result<Self> {
         Ok(Self {
             pristine_root: pristine_root(platform, &game)?,
+            base_root: base_root_for(platform, &game)?,
             composed_root: composed_root(user_dir, &game),
             packages_root: packages_root(platform)?,
             activation_file: activation_path(platform)?,
             user_dir: user_dir.to_path_buf(),
             old_composed_root: old_composed_root(platform, &game).ok(),
             pristine_identity: pristine_identity(platform, &game),
+            payload_fallback: payload_fallback_for(&game),
             game,
             active_override: None,
             texture_policy: TexturePolicy::Manage,
@@ -3106,10 +3271,12 @@ pub fn sync_active(
     let compose = ComposeRequest {
         game: req.game.clone(),
         pristine_root: req.pristine_root.clone(),
+        base_root: req.base_root.clone(),
         composed_root: req.composed_root.clone(),
         packages_root: req.packages_root.clone(),
         packages,
         pristine_identity: req.pristine_identity.clone(),
+        payload_fallback: req.payload_fallback.clone(),
     };
     let plan = match Composer::plan(platform, &compose)? {
         Composition::Planned(plan) => plan,
@@ -3373,10 +3540,12 @@ mod tests {
             ComposeRequest {
                 game: game(),
                 pristine_root: self.pristine.clone(),
+                base_root: None,
                 composed_root: self.composed.clone(),
                 packages_root: self.packages.clone(),
                 packages,
                 pristine_identity: None,
+                payload_fallback: None,
             }
         }
     }
@@ -3614,7 +3783,7 @@ mod tests {
             Some("prompts"),
             &[("GN7E69/btn_a.png", b"xb")],
         );
-        let conflicts = detect_conflicts(&[a, b], &game());
+        let conflicts = detect_conflicts(&[a, b], &game(), None);
         assert_eq!(
             conflicts.len(),
             1,
@@ -4110,6 +4279,275 @@ mod tests {
         );
     }
 
+    // --- the league build: its own pristine tree, the retail mod list (spec 2026-10-08 v2)
+
+    fn league() -> GameId {
+        GameId::parse(crate::league_edition::LEAGUE_GAME_ID).unwrap()
+    }
+
+    /// A platform whose data root is `root`, so data-root lookups stay in a temp folder.
+    fn platform_at(root: &Path) -> Platform {
+        struct TempPaths(PathBuf);
+        impl crate::platform::Paths for TempPaths {
+            fn install_root(&self) -> crate::platform::Result<PathBuf> { Ok(self.0.join("install")) }
+            fn data_root(&self) -> crate::platform::Result<PathBuf> { Ok(self.0.clone()) }
+            fn cache_root(&self) -> crate::platform::Result<PathBuf> { Ok(self.0.join("cache")) }
+            fn exe_suffix(&self) -> &'static str { ".exe" }
+        }
+        let mut p = Platform::detect();
+        p.paths = Box::new(TempPaths(root.to_path_buf()));
+        p
+    }
+
+    #[test]
+    fn only_the_league_build_borrows_retail_payloads() {
+        assert_eq!(payload_fallback_for(&league()), Some(GameId::parse("GN7E69").unwrap()));
+        assert_eq!(payload_fallback_for(&GameId::parse("GN7E69").unwrap()), None);
+        assert_eq!(payload_fallback_for(&GameId::parse("FR4N31").unwrap()), None);
+    }
+
+    /// One shared mod list (spec v2): a mod switched on for Reborn is in the league game too.
+    #[test]
+    fn a_retail_mod_is_composed_into_the_league_tree() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let pkg = lay_package(&fx.packages, "reborn.ball.purple", None, &[("GN7E69/ball.dds", b"purple")]);
+        let mut req = fx.request(vec![pkg]);
+        req.game = league();
+        req.payload_fallback = payload_fallback_for(&req.game);
+        let plan = planned(&p, &req);
+        assert_eq!(plan.overlay_count(), 1);
+        assert!(plan.not_targeted.is_empty());
+    }
+
+    #[test]
+    fn a_league_payload_beats_the_retail_one() {
+        let both = lay_package(&fixture().packages, "reborn.ball.both", None, &[
+            ("GN7E69/ball.dds", b"retail"),
+            (&format!("{}/ball.dds", crate::league_edition::LEAGUE_GAME_ID), b"league"),
+        ]);
+        let gn7 = GameId::parse("GN7E69").unwrap();
+        assert_eq!(both.payload_game(&league(), Some(&gn7)), Some(league()));
+        let retail_only = lay_package(&fixture().packages, "reborn.ball.retail", None, &[("GN7E69/ball.dds", b"retail")]);
+        assert_eq!(retail_only.payload_game(&league(), Some(&gn7)), Some(gn7.clone()));
+        assert_eq!(retail_only.payload_game(&league(), None), None, "no fallback, no payload");
+        let online_only = lay_package(&fixture().packages, "reborn.ball.online", None, &[("FR4N31/ball.dds", b"online")]);
+        assert_eq!(online_only.payload_game(&league(), Some(&gn7)), None);
+    }
+
+    /// The league tree composes the league payload's BYTES, not the retail one's, when a package ships both.
+    #[test]
+    fn a_package_with_a_league_payload_composes_that_payload() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let pkg = lay_package(&fx.packages, "reborn.ball.both", None, &[
+            ("GN7E69/ball.dds", b"retail!"),
+            (&format!("{}/ball.dds", crate::league_edition::LEAGUE_GAME_ID), b"league"),
+        ]);
+        let mut req = fx.request(vec![pkg]);
+        req.game = league();
+        req.payload_fallback = payload_fallback_for(&req.game);
+        let plan = planned(&p, &req);
+        assert_eq!(plan.overlay_count(), 1);
+        let ball = plan.entries.iter().find(|e| e.relative == "ball.dds").unwrap();
+        assert_eq!(ball.bytes, 6, "the league payload, not the 7-byte retail one");
+    }
+
+    /// Two mods that write the same tail clash in the league tree even when one borrows the retail payload.
+    #[test]
+    fn a_borrowed_payload_still_conflicts_in_the_league_tree() {
+        let fx = fixture();
+        let a = lay_package(&fx.packages, "reborn.ball.a", None, &[("GN7E69/ball.dds", b"a")]);
+        let b = lay_package(&fx.packages, "reborn.ball.b", None, &[
+            (&format!("{}/ball.dds", crate::league_edition::LEAGUE_GAME_ID), b"b"),
+        ]);
+        let gn7 = GameId::parse("GN7E69").unwrap();
+        let pkgs = [a, b];
+        assert_eq!(detect_conflicts(&pkgs, &league(), Some(&gn7)).len(), 1);
+        assert!(detect_conflicts(&pkgs, &league(), None).is_empty(), "without the fallback only b is in the tree");
+        assert!(detect_conflicts(&pkgs, &gn7, None).is_empty(), "the retail tree has only a");
+    }
+
+    #[test]
+    fn retail_composition_ignores_the_fallback() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let other = lay_package(&fx.packages, "reborn.ball.other", None, &[("FR4N31/ball.dds", b"online")]);
+        let req = fx.request(vec![other]);
+        assert_eq!(req.payload_fallback, None);
+        assert_eq!(planned(&p, &req).not_targeted.len(), 1, "a retail tree never borrows");
+    }
+
+    /// Composing retail after the league change produces exactly the tree it did before: the pristine set plus the
+    /// retail payloads, and a league-only package is not in it.
+    #[test]
+    fn retail_composition_is_unchanged_by_league_packages() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let retail = lay_package(&fx.packages, "reborn.ball.retail", None, &[("GN7E69/ball.dds", b"retail")]);
+        let league_only = lay_package(&fx.packages, "reborn.ball.league", None, &[
+            (&format!("{}/kick.dds", crate::league_edition::LEAGUE_GAME_ID), b"league"),
+        ]);
+        let before = planned(&p, &fx.request(vec![retail.clone()]));
+        let mut req = fx.request(vec![retail, league_only.clone()]);
+        req.payload_fallback = payload_fallback_for(&req.game);
+        assert_eq!(req.payload_fallback, None);
+        let after = planned(&p, &req);
+        assert_eq!(after.entries, before.entries, "byte-for-byte the same retail tree");
+        assert_eq!(after.not_targeted, vec![league_only.id]);
+    }
+
+    /// The league build's own textures are the ones in its component; the retail pack is its base, not its tree.
+    #[test]
+    fn the_league_pristine_tree_is_the_league_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let p = platform_at(root);
+        assert_eq!(pristine_root(&p, &league()).unwrap(), crate::league_edition::league_textures_root(root));
+    }
+
+    /// A league update swaps the league folder, so its identity is the league-game pointer, never the textures one.
+    #[test]
+    fn the_league_pristine_identity_is_the_league_game_pointer() {
+        use crate::content::{ContentLayout, InstalledVersion, Pointer, POINTER_SCHEMA};
+        let dir = tempfile::tempdir().unwrap();
+        let p = platform_at(dir.path());
+        let layout = ContentLayout::new(dir.path());
+        let save = |component: &str, version: &str, sequence| {
+            Pointer {
+                schema: POINTER_SCHEMA.to_string(),
+                component: component.to_string(),
+                current: InstalledVersion { version: version.to_string(), sequence },
+                previous: None,
+            }
+            .save(&p, &layout.pointer_path(component))
+            .unwrap();
+        };
+        save("textures", "1.3.4", 42);
+        assert_eq!(pristine_identity(&p, &league()), None, "the retail textures pointer is not the league's");
+        assert_eq!(pristine_identity(&p, &game()).as_deref(), Some("1.3.4#42"));
+        save("league-game", "2026.10.09", 7);
+        assert_eq!(
+            pristine_identity(&p, &league()).as_deref(),
+            Some("2026.10.09#7+textures 1.3.4#42"),
+            "the league tree links into the retail pack too, so a retail update rebuilds it"
+        );
+        assert_eq!(pristine_identity(&p, &game()).as_deref(), Some("1.3.4#42"), "retail unchanged");
+        save("textures", "1.3.5", 43);
+        assert_eq!(pristine_identity(&p, &league()).as_deref(), Some("2026.10.09#7+textures 1.3.5#43"));
+    }
+
+    /// The league ships only what it changes (Adam 10-16): its tree is laid over the retail pack.
+    #[test]
+    fn the_league_tree_is_laid_over_the_retail_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = platform_at(dir.path());
+        assert_eq!(
+            base_root_for(&p, &league()).unwrap(),
+            Some(pristine_root(&p, &game()).unwrap()),
+            "the same retail tree the retail game composes from"
+        );
+        assert_eq!(base_root_for(&p, &game()).unwrap(), None);
+        assert_eq!(base_root_for(&p, &GameId::parse("FR4N31").unwrap()).unwrap(), None);
+    }
+
+    /// The fixture's retail pack as the base, and a league tree holding one changed texture (the football, at
+    /// another path) and one the retail pack does not have.
+    fn league_request(fx: &Fixture, packages: Vec<ModPackage>) -> ComposeRequest {
+        let own = fx.pristine.parent().unwrap().join(crate::league_edition::LEAGUE_GAME_ID);
+        write(&own.join("jerseys").join(BALL.to_uppercase()), b"league ball");
+        write(&own.join("tex1_league_logo.dds"), b"league logo");
+        let mut req = fx.request(packages);
+        req.game = league();
+        req.payload_fallback = payload_fallback_for(&req.game);
+        req.base_root = Some(fx.pristine.clone());
+        req.pristine_root = own;
+        req
+    }
+
+    #[test]
+    fn a_league_texture_replaces_the_retail_one_by_name_wherever_it_sits() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let plan = planned(&p, &league_request(&fx, vec![]));
+        let names: Vec<&str> = plan.entries.iter().map(|e| e.relative.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![format!("jerseys/{}", BALL.to_uppercase()).as_str(), "sub/tex1_other.dds", "tex1_league_logo.dds"],
+            "the retail football is gone (Dolphin would keep one of two at random); the rest of retail stays"
+        );
+        assert_eq!(plan.overlay_count(), 0);
+        assert_eq!(plan.base_root.as_deref(), Some(fx.pristine.as_path()));
+    }
+
+    /// "league textures win": a mod with a league texture's name is left out; a mod over a retail texture applies.
+    /// Dolphin keys a texture by its name WITHOUT the extension and keeps one of a .dds/.png pair at random: the
+    /// league's PNG numbers (S4, 10-18) must replace the retail .dds of the same name.
+    #[test]
+    fn a_league_png_replaces_the_retail_dds_of_the_same_name() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let stem = BALL.trim_end_matches(".dds");
+        let own = fx.pristine.parent().unwrap().join(crate::league_edition::LEAGUE_GAME_ID);
+        write(&own.join("numbers").join(format!("{stem}.png")), b"league png ball");
+        let mut req = fx.request(vec![]);
+        req.game = league();
+        req.payload_fallback = payload_fallback_for(&req.game);
+        req.base_root = Some(fx.pristine.clone());
+        req.pristine_root = own;
+        let plan = planned(&p, &req);
+        let names: Vec<&str> = plan.entries.iter().map(|e| e.relative.as_str()).collect();
+        assert_eq!(names, vec![format!("numbers/{stem}.png").as_str(), "sub/tex1_other.dds"], "the retail .dds is gone");
+    }
+
+    #[test]
+    fn a_league_texture_beats_a_mod_and_a_mod_still_beats_retail() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let ball = lay_package(&fx.packages, "reborn.ball.purple", None, &[(&format!("GN7E69/{BALL}"), b"purple")]);
+        let other = lay_package(&fx.packages, "reborn.other.green", None, &[("GN7E69/sub/tex1_other.dds", b"green")]);
+        let plan = planned(&p, &league_request(&fx, vec![ball, other]));
+        assert_eq!(plan.overlays().iter().map(|o| o.relative.as_str()).collect::<Vec<_>>(), vec!["sub/tex1_other.dds"]);
+        assert!(!plan.entries.iter().any(|e| e.relative == BALL), "neither the retail nor the mod football");
+    }
+
+    #[test]
+    fn a_league_tree_composes_and_verifies_and_a_new_base_rebuilds_it() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let req = league_request(&fx, vec![]);
+        let plan = planned(&p, &req);
+        let guard = lock(&p, &fx);
+        Composer::apply(&p, &guard, &plan).unwrap();
+        assert!(Composer::verify(&plan).unwrap().matches_the_plan());
+        assert_eq!(std::fs::read(fx.composed.join("sub").join("tex1_other.dds")).unwrap(), b"another texture");
+
+        let elsewhere = fx.pristine.parent().unwrap().join("retail-copy");
+        lay_pristine(&elsewhere);
+        let mut moved = req.clone();
+        moved.base_root = Some(elsewhere);
+        let found = Composer::verify(&planned(&p, &moved)).unwrap();
+        assert!(found.discrepancies.iter().any(|d| matches!(d, Discrepancy::BaseRootDiffers { .. })), "{}", found.report());
+    }
+
+    #[test]
+    fn a_missing_retail_pack_refuses_the_league_tree() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let mut req = league_request(&fx, vec![]);
+        req.base_root = Some(fx.pristine.parent().unwrap().join("absent"));
+        assert!(matches!(refusal(&p, &req), ComposeRefusal::NoPristineTree { .. }));
+    }
+
+    #[test]
+    fn a_composed_tree_inside_the_base_is_refused() {
+        let p = Platform::detect();
+        let fx = fixture();
+        let mut req = league_request(&fx, vec![]);
+        req.composed_root = fx.pristine.join("composed");
+        assert!(matches!(refusal(&p, &req), ComposeRefusal::ComposedInsidePristine { .. }));
+    }
+
     /// The activation list is the source of truth for a rebuild. A schema it
     /// does not understand must not be read as an empty list, or the rebuild
     /// turns every mod off and reports success.
@@ -4180,6 +4618,7 @@ mod tests {
             record: Some(ComposedRecord {
                 game: game(),
                 pristine_root: PathBuf::from("pristine"),
+                base_root: None,
                 pristine_identity: None,
                 activation: vec![ActivePackage {
                     id: ModId::parse("reborn.ball.purple").unwrap(),
@@ -4881,12 +5320,14 @@ mod tests {
         SyncRequest {
             game: game(),
             pristine_root: fx.pristine.clone(),
+            base_root: None,
             composed_root: composed_root(user_dir, &game()),
             packages_root: fx.packages.clone(),
             activation_file: fx.activation(),
             user_dir: user_dir.to_path_buf(),
             old_composed_root: Some(fx.composed.clone()),
             pristine_identity: None,
+            payload_fallback: None,
             active_override: None,
             texture_policy: TexturePolicy::Manage,
         }

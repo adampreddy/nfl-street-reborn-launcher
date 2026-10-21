@@ -142,6 +142,10 @@ pub fn install_dir(id: ComponentId) -> Option<DataDir> {
         // check/fetch/promote loop.
         ComponentId::GameFull => Some(DataDir::LibraryGameFull),
         ComponentId::GameImport => Some(DataDir::LibraryGameImport),
+        // Members only, never in `updatable()`: delivered by the league tab's
+        // own backend-signed download path, not this public-CDN loop.
+        ComponentId::LeagueGame => Some(DataDir::LibraryLeague),
+        ComponentId::LeagueContent => Some(DataDir::LibraryLeagueContent),
         ComponentId::Launcher | ComponentId::ControllerDb => None,
     }
 }
@@ -1024,6 +1028,7 @@ mod tests {
                 sequence: b.sequence,
                 install_root: b.install_root.clone(),
                 customizable: false,
+                members_only: false,
                 files,
             };
             let bytes = serde_json::to_vec(&component).unwrap();
@@ -1151,6 +1156,15 @@ mod tests {
         assert_eq!(landed, dir.path().join("library").join("game-full").join("NSR.iso"));
         assert!(!dir.path().join("library").join("offline").join("NSR.iso").exists());
         assert!(!dir.path().join("library").join("imported").exists());
+    }
+
+    /// League blobs are not on the public CDN: the automatic update loop must never try to fetch them.
+    #[test]
+    fn league_components_are_never_auto_updated() {
+        assert!(!updatable().contains(&ComponentId::LeagueGame));
+        assert!(!updatable().contains(&ComponentId::LeagueContent));
+        assert_eq!(install_dir(ComponentId::LeagueGame), Some(DataDir::LibraryLeague));
+        assert_eq!(install_dir(ComponentId::LeagueContent), Some(DataDir::LibraryLeagueContent));
     }
 
     /// A release that does not pin `game-full` cannot be talked into serving

@@ -179,6 +179,10 @@ pub enum ComponentId {
     /// it as content instead. The tools that apply it (DolphinTool,
     /// xdelta3) are not in it: they ship with the launcher on every OS.
     GameImport,
+    /// The league build: league ISO + league texture tree. Members only.
+    LeagueGame,
+    /// The league seed save state. Members only.
+    LeagueContent,
 }
 
 impl ComponentId {
@@ -197,6 +201,8 @@ impl ComponentId {
         ComponentId::GamePatch,
         ComponentId::GameFull,
         ComponentId::GameImport,
+        ComponentId::LeagueGame,
+        ComponentId::LeagueContent,
     ];
 
     /// The name that goes in the manifest and in the release's component map.
@@ -215,6 +221,8 @@ impl ComponentId {
             ComponentId::GamePatch => "game-patch",
             ComponentId::GameFull => "game-full",
             ComponentId::GameImport => "game-import",
+            ComponentId::LeagueGame => "league-game",
+            ComponentId::LeagueContent => "league-content",
         }
     }
 
@@ -265,6 +273,13 @@ impl ComponentId {
         matches!(self, ComponentId::OfflineContent)
     }
 
+    /// Whether the blobs are withheld from the public CDN and handed out by
+    /// the backend to league members only. A property of the identity, like
+    /// [`Self::is_customizable`], so a generator cannot get it wrong.
+    pub fn is_members_only(self) -> bool {
+        matches!(self, ComponentId::LeagueGame | ComponentId::LeagueContent)
+    }
+
     /// The install root, relative to the data root, when it follows from the
     /// component identity alone.
     ///
@@ -299,6 +314,8 @@ impl ComponentId {
             // step, not this component's install root.
             ComponentId::GameFull => Some(DataDir::LibraryGameFull.relative()),
             ComponentId::GameImport => Some(DataDir::LibraryGameImport.relative()),
+            ComponentId::LeagueGame => Some(DataDir::LibraryLeague.relative()),
+            ComponentId::LeagueContent => Some(DataDir::LibraryLeagueContent.relative()),
             ComponentId::Textures | ComponentId::Launcher | ComponentId::ControllerDb => None,
         }
     }
@@ -805,6 +822,7 @@ pub fn scan_component(
         install_root: spec.install_root.clone(),
         // Derived, never passed. See ComponentId::is_customizable.
         customizable: spec.id.is_customizable(),
+        members_only: spec.id.is_members_only(),
         files,
     };
 
@@ -1133,6 +1151,27 @@ impl SerializedComponent {
                  stops repair deleting a user's music",
                 component.component, component.customizable, parsed.customizable
             )));
+        }
+        if parsed.members_only != component.members_only {
+            return Err(refuse(format!(
+                "the manifest this generator produced for {:?} lost its members_only \
+                 flag on the way out. Publishing it would put members-only content \
+                 on the public CDN",
+                component.component
+            )));
+        }
+        if let Some(id) = ComponentId::parse(&component.component) {
+            if component.members_only != id.is_members_only() {
+                return Err(refuse(format!(
+                    "the manifest for {:?} says members_only = {} but that component \
+                     is members_only = {}. A league build marked public would be \
+                     published to the public CDN; a retail component marked \
+                     members-only could never be downloaded",
+                    component.component,
+                    component.members_only,
+                    id.is_members_only()
+                )));
+            }
         }
 
         let sha256 = Sha256Hex::from_bytes(&bytes);
@@ -2407,5 +2446,74 @@ mod tests {
         component.schema = "reborn.manifest.v1".to_string();
         let err = SerializedComponent::new(component).unwrap_err();
         assert!(err.to_string().contains("nsr.component.v1"), "{err}");
+    }
+
+    #[test]
+    fn only_the_two_league_components_are_members_only() {
+        for id in ComponentId::ALL {
+            let expected = matches!(id, ComponentId::LeagueGame | ComponentId::LeagueContent);
+            assert_eq!(id.is_members_only(), expected, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn league_components_have_fixed_wire_names_and_install_roots() {
+        assert_eq!(ComponentId::LeagueGame.as_str(), "league-game");
+        assert_eq!(ComponentId::LeagueContent.as_str(), "league-content");
+        assert_eq!(ComponentId::parse("league-game"), Some(ComponentId::LeagueGame));
+        assert_eq!(ComponentId::parse("league-content"), Some(ComponentId::LeagueContent));
+        assert_eq!(ComponentId::LeagueGame.install_root(), Some("library/league"));
+        assert_eq!(ComponentId::LeagueContent.install_root(), Some("library/league-content"));
+        assert!(!ComponentId::LeagueGame.is_customizable());
+    }
+
+    #[test]
+    fn a_scanned_league_tree_is_marked_members_only_and_a_retail_one_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"league").unwrap();
+        for (id, expected) in [(ComponentId::LeagueGame, true), (ComponentId::Runtime, false)] {
+            let spec = ComponentSpec::new(id, "1.0.0", 1).unwrap();
+            let ScanOutcome::Complete(scan) = scan_component(dir.path(), &spec, &RunToCompletion).unwrap() else {
+                panic!("cancelled")
+            };
+            let ser = SerializedComponent::new(scan.component).unwrap();
+            assert_eq!(ser.component().members_only, expected, "{id:?}");
+        }
+    }
+
+    #[test]
+    fn the_publisher_refuses_a_league_manifest_marked_public_and_a_retail_one_marked_members_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"x").unwrap();
+        for (id, flag) in [(ComponentId::LeagueGame, false), (ComponentId::LeagueContent, false), (ComponentId::Runtime, true)] {
+            let spec = ComponentSpec::new(id, "1.0.0", 1).unwrap();
+            let ScanOutcome::Complete(mut scan) = scan_component(dir.path(), &spec, &RunToCompletion).unwrap() else {
+                panic!("cancelled")
+            };
+            scan.component.members_only = flag;
+            let err = SerializedComponent::new(scan.component).unwrap_err();
+            assert!(err.to_string().contains("members_only"), "{id:?}: {err}");
+            assert!(!err.to_string().contains("  "), "no run of spaces: {err}");
+        }
+    }
+
+    /// A public manifest from the real generator must survive parse and
+    /// re-serialize with identical bytes, or the new field would change the
+    /// hash of every manifest already pinned.
+    #[test]
+    fn public_manifests_round_trip_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"payload").unwrap();
+        for id in [ComponentId::Runtime, ComponentId::OfflineContent] {
+            let spec = ComponentSpec::new(id, "1.0.0", 1).unwrap();
+            let ScanOutcome::Complete(scan) = scan_component(dir.path(), &spec, &RunToCompletion).unwrap() else {
+                panic!("cancelled")
+            };
+            let ser = SerializedComponent::new(scan.component).unwrap();
+            assert!(!ser.component().members_only);
+            let parsed = Component::parse(ser.bytes()).unwrap();
+            let again = serde_json::to_vec_pretty(&parsed).unwrap();
+            assert_eq!(again, ser.bytes(), "{id:?}");
+        }
     }
 }

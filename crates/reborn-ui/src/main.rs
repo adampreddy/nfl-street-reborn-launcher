@@ -31,6 +31,8 @@ mod setup_tools;
 mod shell_tools;
 mod dolphin_settings;
 mod online_mm;
+mod league_edition;
+mod league_tab;
 mod live_settings;
 mod live_view;
 mod launcher_look;
@@ -1204,6 +1206,8 @@ async fn launch(
     // The player saw that their controller needs setting up and chose to play
     // anyway. Absent and false are the same thing: ask first.
     play_anyway: Option<bool>,
+    // "league": the League tab's Play offline (league_edition::league_play_offline). Absent: retail, as always.
+    edition: Option<String>,
 ) -> Result<LaunchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = LaunchGuard::acquire_session()?;
@@ -1225,13 +1229,31 @@ async fn launch(
         // What we are about to boot, before we boot it. A disc that is not a
         // Reborn build must never reach the emulator wearing Reborn's
         // textures: that is what produced "old names with new faces".
-        let standing = may_play_before_boot(&p, &game_path)?;
+        //
+        // The League tab's Play offline boots the league build (spec v2 §4): its own disc, its own game ID, never
+        // judged against the retail patch chain (it is not on it) but by session's rule for that build. Retail is
+        // exactly what it was.
+        let league = edition.as_deref() == Some("league");
+        let (game_path, standing, build) = if league {
+            let image = crate::league_edition::ready_league_image(&p)?;
+            let data = p.paths.data_root().ok();
+            let standing = reborn_core::session::standing_for_build(
+                GameBuild::League,
+                &image,
+                data.as_deref(),
+                reborn_core::game_identity::ImageStanding::Unknown,
+            );
+            (image, standing, GameBuild::League)
+        } else {
+            let standing = may_play_before_boot(&p, &game_path)?;
+            (game_path, standing, GameBuild::Offline)
+        };
         let req = LaunchRequest {
             runtime_exe: found.path().to_path_buf(),
             game_path,
             graphics: preset_from(&preset),
             fullscreen,
-            build: GameBuild::Offline,
+            build,
             mods_disabled,
             user_dir: chosen_user,
             league_match: league_match.unwrap_or(false),
@@ -2055,13 +2077,41 @@ pub(crate) fn sync_active_judged(
     runtime_hint: Option<&str>,
     already_judged: Option<reborn_core::game_identity::ImageStanding>,
 ) -> Result<ModSyncView, String> {
+    sync_active_judged_for(p, runtime_hint, already_judged, GameBuild::Offline)
+}
+
+/// [`sync_active_judged`] for a named build: the League edition composes `Load/Textures/<LEAGUE_GAME_ID>` from its own
+/// pristine tree plus the shared mod list (reborn_core::mods::payload_fallback_for).
+pub(crate) fn sync_active_judged_for(
+    p: &Platform,
+    runtime_hint: Option<&str>,
+    already_judged: Option<reborn_core::game_identity::ImageStanding>,
+    build: GameBuild,
+) -> Result<ModSyncView, String> {
+    // The league tree composes only from an installed league build, and is judged by session's rule for that build
+    // (`standing_for_build`), never by the retail disc's verdict or the caller's word for it.
+    let league_standing = if build == GameBuild::League {
+        let data = p.paths.data_root().map_err(|e| e.to_string())?;
+        if reborn_core::league_edition::read_league_info(&data).is_err() {
+            return Err(crate::league_edition::NOT_INSTALLED.to_string());
+        }
+        Some(reborn_core::session::standing_for_build(
+            GameBuild::League,
+            &reborn_core::league_edition::league_image_path(&data),
+            Some(&data),
+            reborn_core::game_identity::ImageStanding::Unknown,
+        ))
+    } else {
+        None
+    };
+    let already_judged = league_standing.or(already_judged);
     let Startup::Owner(lock) = Supervisor::acquire(p).map_err(|e| e.to_string())? else {
         return Err(already_running());
     };
     let exe = runtime_for(p, runtime_hint);
     let preferences = reborn_core::settings::Settings::load(&reborn_core::settings::settings_path(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let user = reborn_core::session::resolve_user_dir_for(p, preferences.user_dir.as_deref(), exe.as_deref()).map_err(|e| e.to_string())?;
-    let game = GameId::parse(GameBuild::Offline.game_id()).map_err(|e| e.to_string())?;
+    let game = GameId::parse(build.game_id()).map_err(|e| e.to_string())?;
     let mut req = reborn_core::mods::SyncRequest::in_data_root(p, game.clone(), user.path())
         .map_err(|e| e.to_string())?;
     // The same two questions a launch asks, in the same order, and for the
@@ -4285,6 +4335,7 @@ fn entry_state_label(state: &EntryState) -> (&'static str, Option<String>) {
         EntryState::Held { reason } => ("held", Some(reason.clone())),
         EntryState::Rejected { reason } => ("rejected", Some(reason.clone())),
         EntryState::Stalled { reason } => ("stalled", Some(reason.clone())),
+        EntryState::NotUploaded { reason } => ("local", Some(reason.clone())),
     }
 }
 
@@ -4315,6 +4366,8 @@ fn queue_counts(entries: &[QueueEntry]) -> StatsQueueCounts {
             EntryState::Accepted => counts.accepted += 1,
             EntryState::Held { .. } => counts.held += 1,
             EntryState::Rejected { .. } => counts.rejected += 1,
+            // Kept on this computer by design: not waiting, not a problem, only part of `total`.
+            EntryState::NotUploaded { .. } => {}
         }
     }
     counts
@@ -5065,7 +5118,7 @@ async fn identity_sign_in_start() -> Result<SignInStartView, String> {
 
 /// Ask whether the browser step finished. On "done" the token is already in the vault.
 #[tauri::command]
-async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, String> {
+async fn identity_sign_in_poll(app: tauri::AppHandle, device_code: String) -> Result<SignInPollView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let origin = backend_origin(&p)?;
@@ -5085,6 +5138,8 @@ async fn identity_sign_in_poll(device_code: String) -> Result<SignInPollView, St
                 // consumed, and the refusals they got landed on the screen
                 // beside the sign-in that had just succeeded.
                 send_backlog_in_background();
+                // The League link for this sign-in, on its own thread too.
+                league_tab::refresh_membership(app);
                 Ok(SignInPollView { state: "done", display_name: Some(name) })
             }
         }
@@ -5342,7 +5397,7 @@ async fn open_runtime(runtime: Option<String>, user_dir: Option<String>) -> Resu
         // is being opened on its own rather than pointed at a fixture. The
         // folder Dolphin writes into still says whether the game was online.
         let record = supervisor
-            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false, match_id: None }))
+            .begin_with_intent(GameBuild::Offline, Some(SessionIntent { league_match: false, match_id: None, league_fixture_id: None, league_edition: false }))
             .map_err(|e| e.player_message().to_string())?;
 
         let env = std::collections::BTreeMap::new();
@@ -5517,7 +5572,7 @@ async fn diagnostic_bundle(runtime: Option<String>) -> Result<DiagnosticBundleVi
 // Content and updates
 // ---------------------------------------------------------------------------
 
-/// Refuse a component name that is not one of the seven that exist.
+/// Refuse a component name that is not one of the components that exist.
 ///
 /// An unknown name is a typo or a tampered file, and answering it with "nothing
 /// is installed" would be a plausible-looking result for a component the
@@ -5528,7 +5583,8 @@ fn known_component(name: &str) -> Result<(), String> {
     }
     let known: Vec<&str> = ComponentId::ALL.iter().map(|id| id.as_str()).collect();
     Err(format!(
-        "{name:?} is not a component. The seven are: {}.",
+        "{name:?} is not a component. The {} are: {}.",
+        known.len(),
         known.join(", ")
     ))
 }
@@ -6595,6 +6651,9 @@ fn main() {
             // A one-file Linux launcher fetches its emulator now, in the
             // background, so no page waits for it.
             content_updates::start_runtime_download();
+            // The League link's answer (league.json), refreshed on its own thread: no page waits for it, and a new
+            // member's link appears when it lands (spec 2026-10-08 §3).
+            league_tab::refresh_membership(app.handle().clone());
             // An old folder a move could not delete at the time, if any.
             move_drive::clean_leftovers();
             if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
@@ -6672,6 +6731,12 @@ fn main() {
             online_mm::mm_leave_queue,
             online_mm::mm_room_create,
             online_mm::mm_room_join,
+            league_edition::league_edition_status,
+            league_edition::league_edition_installed,
+            league_edition::league_edition_install,
+            league_edition::league_play_offline,
+            league_edition::league_host_friendly,
+            league_edition::league_room_open,
             online_mm::mm_room_lookup,
             online_mm::mm_room_action,
             online_mm::mm_match_action,
@@ -6683,6 +6748,10 @@ fn main() {
             live_view::stats_my_games,
             live_view::stats_game,
             live_view::stats_dashboard,
+            league_tab::league_member,
+            league_tab::league_home,
+            league_tab::league_logo,
+            league_tab::league_portrait,
             live_view::player_profile,
             live_view::set_plays_as,
             live_view::leaderboard,
@@ -8626,6 +8695,7 @@ struct StatsSubmitView {"),
             sequence: 1,
             install_root: DataDir::LibraryOffline.relative().to_string(),
             customizable: true,
+            members_only: false,
             files: vec![
                 ManifestFile {
                     path: "game.iso".to_string(),
@@ -8714,8 +8784,9 @@ struct StatsSubmitView {"),
     #[test]
     fn an_unknown_component_name_is_refused_rather_than_answered() {
         let err = known_component("offline_content")
-            .expect_err("a name that is not one of the seven must not be answered");
+            .expect_err("a name that is not a component must not be answered");
         assert!(err.contains("offline-content"), "name the real ones: {err}");
+        assert!(err.contains(&format!("The {} are:", ComponentId::ALL.len())), "the real count: {err}");
         assert!(known_component("offline-content").is_ok());
         assert!(known_component("textures").is_ok());
     }
@@ -8899,7 +8970,10 @@ struct StatsSubmitView {"),
             !netplay.contains("netplay_copy_is_reborns_own"),
             "the provenance downgrade is back: it withholds the pack from players who have it offline"
         );
-        let gate = depth_at("may_play_before_boot");
+        // The gate's STATEMENT: a league room's disc is ruled Reborn by its own gate (ready_league_image), so the
+        // retail call sits in the `else` of that statement, one brace deeper than the statement itself.
+        assert!(netplay.contains("may_play_before_boot"), "netplay_open no longer asks what a retail disc is");
+        let gate = depth_at("let chosen_disc=");
         let sync_depth = depth_at("sync_active_judged");
         assert!(
             netplay.find("let standing=chosen_disc;").unwrap() < netplay.find("sync_active_judged").unwrap(),

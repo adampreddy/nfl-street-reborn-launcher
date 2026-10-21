@@ -2,7 +2,7 @@
 // screen that shows up after a game ... needs a redesign to match the rest of the launcher"). It is the matchup card
 // finished: you and your opponent with your pictures and team logos, the winner marked, the final series big in the
 // middle, each game's score from your side, the Elo change when the server sends one, "Unofficial" until the server
-// says the result is official; under it Play again, Box score, Rematch and Back to Online.
+// says the result is official; under it Play again, Box score, Rematch (when the server offers one) and Back to Online.
 // PURE: only online-model.js (itself pure), so node --test can load it; the page hands in `el`, `avatar` and `teamLogo`.
 import { modeLine } from './online-model.js';
 import { shownName } from './names.js';
@@ -59,6 +59,8 @@ export function seriesOverModel(match, live, self = {}) {
     you: { name: you, id: seats[me]?.player_id ?? self.id ?? null, avatar: seats[me]?.avatar_url ?? self.avatar ?? null, team: myTeam, elo: seatDelta(me) ?? eloChange(match.elo_delta) },
     them: { name: them, id: seats[1 - me]?.player_id ?? match.opponent_id ?? null, avatar: seats[1 - me]?.avatar_url ?? match.opponent_avatar_url ?? null, team: theirTeam ?? team(match.opponent_team), elo: seatDelta(1 - me) },
     mode: modeLine(match.mode, match.best_of),
+    // Adam 10-09: Rematch only when the server offers one. Absent (an older backend) keeps today's button.
+    rematch: match.rematch_available !== false,
     // The whole match on the launcher's own match page; Back there returns to Online.
     boxHref: typeof match.id === 'string' && UUID_RE.test(match.id) ? `match.html?${new URLSearchParams({ match: match.id, from: 'online.html' })}` : null,
   };
@@ -97,7 +99,7 @@ export function drawSeriesOver(m, { el, avatar, teamLogo, playerLink = null, onA
   const row = el('div', { class: 'on-row on-over-row' },
     el('button', { type: 'button', class: 'btn primary on-go', 'data-key': 'over-again', 'data-primary': 'true', text: 'Play again', onclick: onAgain }),
     m.boxHref ? el('button', { type: 'button', class: 'btn', 'data-key': 'over-box', text: 'Box score ›', onclick: onBox }) : null,
-    el('button', { type: 'button', class: 'btn', 'data-key': 'over-rematch', text: 'Rematch', onclick: onRematch }),
+    m.rematch === false ? null : el('button', { type: 'button', class: 'btn', 'data-key': 'over-rematch', text: 'Rematch', onclick: onRematch }),
     el('button', { type: 'button', class: 'btn quiet', 'data-key': 'over-back', text: 'Back to Online', onclick: onBack }));
   return [card, row];
 }
