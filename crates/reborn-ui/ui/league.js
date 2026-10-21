@@ -3,8 +3,9 @@
 // page sends them to Play. Everything is server data, drawn with el()'s `text` only; images only through teamLogo()
 // (league_logo data: URLs, or assetUrl). Layout F (spec 2026-10-17): no team colour reaches CSS.
 // The League edition commands (league_edition_*, league_play_offline, league_host_friendly, league_room_open) are
-// Plan 3b's; none of them navigates. Rooms run through the existing private-room path and this page hands over to
-// the Online page itself.
+// Plan 3b's; none of them navigates. Your league FIXTURE's room stays on this page (game day, spec 2026-10-21): the
+// same mm_state snapshot and mm_room_action commands Online uses, drawn by league-gameday.js. A friendly still hands
+// over to the Online page.
 import { call, el, markCurrent, quietCall, reason, wireCoreFold } from './shell.js';
 import { makePoller } from './live-common.js';
 import { teamLogo } from './match-rows.js';
@@ -13,6 +14,9 @@ import {
   bannerState, isUpdateRequired, pageMode, runningInstall, seasonLine, siteUrl, standingsRows, teamCardLine, updateRequiredLine,
   weekBest, weekGames, withInstalled,
 } from './league-model.js';
+import { gameDay } from './league-gameday-model.js';
+import { drawGameDay } from './league-gameday.js';
+import { settleChat } from './room-card.js';
 
 const REFRESH_MS = 60000;
 const STALE_LINE = "Can't reach the league right now.";
@@ -46,6 +50,54 @@ function logoFor(id) {
 const logoTeam = (t) => ({ name: t?.name || t?.abbrev || t?.abbr, abbrev: t?.abbrev || t?.abbr,
   logo_url: logoFor(t?.team_id ?? t?.id) ?? t?.logo_url });
 const go = (href) => { location.href = href; };
+
+// Game day: player portraits, asked of the core once per player per visit (league_portrait), like logos.
+const faces = new Map();
+const askedFaces = new Set();
+function portraitFor(poid) {
+  const key = Number(poid);
+  if (!Number.isSafeInteger(key) || key <= 0) return null;
+  if (!askedFaces.has(key)) {
+    askedFaces.add(key);
+    quietCall('league_portrait', { poid: key }).then((u) => {
+      if (typeof u !== 'string') return;
+      faces.set(key, u);
+      if (!logoDraw) logoDraw = setTimeout(() => { logoDraw = 0; draw(); }, 50);
+    }).catch(() => {});
+  }
+  return faces.get(key) ?? null;
+}
+
+// The matchmaking snapshot (mm_state: an in-memory read, never the network), once a second while the page is shown.
+// `homeFor` holds the room or match id the player stepped back from (‹ League): the League home shows until that room
+// or match is gone or another takes its place. `doneMatch` is a series-over screen put away (Back to League).
+const MM_MS = 1000;
+let snap = null, snapKey = '', homeFor = null, doneMatch = null, mmTimer = 0;
+async function pollMm() {
+  let next = null;
+  try { const st = await quietCall('mm_state'); next = st && typeof st === 'object' ? st.snapshot ?? null : null; } catch (_) { next = null; }
+  const key = JSON.stringify(next ?? null);
+  if (key === snapKey) return;
+  snap = next; snapKey = key;
+  draw();
+}
+function startMm() { if (!mmTimer) { pollMm(); mmTimer = setInterval(pollMm, MM_MS); } }
+function stopMm() { clearInterval(mmTimer); mmTimer = 0; }
+const viewId = (g) => g?.match?.id ?? g?.room?.id ?? null;
+function gameDayNow() {
+  const g = gameDay(state.home, snap);
+  if (!g) return null;
+  if (g.match && g.match.id === doneMatch) return null;
+  const id = viewId(g);
+  if (homeFor !== null && homeFor === id) return null;
+  return g;
+}
+const showGameDay = () => { homeFor = null; draw(); };
+async function mmAct(cmd, args) {
+  state.actionError = null;
+  try { await call(cmd, args); } catch (e) { state.actionError = reason(e); }
+  snapKey = ''; await pollMm(); draw();
+}
 
 // The release check (network): on page load, after an install and after a version refusal only (3a final fix M2).
 async function loadEdition() {
@@ -173,9 +225,9 @@ const play = () => act('primary', async () => {
   const r = await call('league_room_open');
   const code = r?.code || r?.room?.code;
   if (r?.action === 'join' && code) await joinLeagueRoom(code);
-  go('online.html');
+  homeFor = null; snapKey = ''; await pollMm();
 });
-const join = (room) => act('primary', async () => { await joinLeagueRoom(room.code); go('online.html'); });
+const join = (room) => act('primary', async () => { await joinLeagueRoom(room.code); homeFor = null; snapKey = ''; await pollMm(); });
 const cancel = (room) => act('cancel', async () => { await call('mm_room_action', { roomId: room.room_id ?? room.id, action: 'leave' });
   // The leave went through. A reload that fails now is a refresh problem (the banner), never Cancel's.
   await load().catch(() => {});
@@ -220,7 +272,7 @@ const ACT_BUSY = { play: 'Opening room…', join: 'Joining…', cancel: 'Leaving
 
 function actionButton(a, s, home) {
   const handlers = {
-    play: () => play(), join: () => join(home.matchup.room), open: () => go('online.html'), back: () => go('online.html'),
+    play: () => play(), join: () => join(home.matchup.room), open: () => showGameDay(), back: () => showGameDay(),
     cancel: () => cancel(home.matchup.room), offline: () => offline(), friendly: () => friendly(), install: () => install(),
   };
   const busyKey = { play: 'primary', join: 'primary', cancel: 'cancel', offline: 'offline', friendly: 'friendly' }[a.key];
@@ -312,6 +364,7 @@ function draw() {
   linkN = 0;
   screen.replaceChildren(...view());
   if (focusKey) screen.querySelector?.(`[data-key="${focusKey}"]`)?.focus?.({ preventScroll: true });
+  settleChat();
 }
 
 function view() {
@@ -324,6 +377,12 @@ function view() {
   const mode = pageMode(home);
   if (mode === 'signed_out') return [signInCard()];
   if (mode !== 'member') return [el('p', { class: 'loading', text: 'The League tab is for league members. Taking you to Play…' })];
+  const g = gameDayNow();
+  if (g) {
+    return [drawGameDay(g, snap?.chat ?? [], { mmAct, logoFor, portraitFor, staleLine: 'League site unreachable, showing saved data',
+      onBack: () => { if (g.match && (g.match.relay_state === 'complete' || g.match.relay_state === 'held')) doneMatch = g.match.id; else homeFor = viewId(g); draw(); } }),
+      state.actionError ? el('p', { class: 'refusal', role: 'alert', text: state.actionError }) : null].filter(Boolean);
+  }
   // One amber line for old data, whichever way it is old (the core's cached answer, or a refresh that failed).
   const stale = state.error || home.stale === true ? STALE_LINE : null;
   const setup = state.controllerSetup ? el('div', { class: 'partial lg-setup', role: 'alert' },
@@ -352,4 +411,5 @@ screen?.addEventListener?.('click', (e) => {
 markCurrent();
 wireCoreFold();
 poller.start();
-document.addEventListener('visibilitychange', () => (document.hidden ? poller.stop() : poller.start()));
+startMm();
+document.addEventListener('visibilitychange', () => (document.hidden ? (poller.stop(), stopMm()) : (poller.start(), startMm())));

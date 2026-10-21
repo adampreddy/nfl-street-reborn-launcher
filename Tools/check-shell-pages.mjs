@@ -308,7 +308,9 @@ for (const [file, name] of PAGES) {
   check("Play {opponent} is the page's primary control", go?.attrs?.["data-primary"] === "true");
   if (go) {
     await p.press(go);
-    check("Play {opponent} opens the room, then hands over to Online", p.seen.some(([c]) => c === "league_room_open") && global.location.href === "online.html", JSON.stringify(p.seen.map(([c]) => c)));
+    // Game day (spec 2026-10-21): the fixture's room stays on the League tab; the page reads the snapshot again.
+    const seen = p.seen.map(([c]) => c);
+    check("Play {opponent} opens the room and stays on the League tab", seen.includes("league_room_open") && seen.lastIndexOf("mm_state") > seen.indexOf("league_room_open") && global.location.href !== "online.html", JSON.stringify(seen));
   }
 
   p = await leaguePage({ league_edition_status: { installed: false, version: null, latest: "2026.10.08", update_available: false, size_bytes: 1610612736, game_id: "NSRS04" } });
