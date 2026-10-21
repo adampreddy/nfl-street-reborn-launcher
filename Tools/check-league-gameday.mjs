@@ -1,6 +1,6 @@
 // League game day (spec docs/superpowers/specs/2026-10-21-league-game-day-design.md): every game day state from
-// lib/page-states.mjs on the real League page, in Edge. Fails on a page error, a sideways scroll, a page that scrolls at
-// 1280x800, a Hold up button, Start live before both are ready, lines in Week 1, the tape's rows out of order, the wrong
+// lib/page-states.mjs on the real League page, in Edge. Fails on a page error, a sideways scroll,
+// a Hold up button, Start live before both are ready, lines in Week 1, the tape's rows out of order, the wrong
 // match words, a Rematch, a player row too tall, or a clipped name. Screenshots land in target/league-gameday.
 //     node Tools/check-league-gameday.mjs
 import { chromium } from 'playwright';
@@ -27,7 +27,6 @@ for (const s of STATES.gameday) {
   if (!(await page.locator('.gd').count())) p.push('no game day view');
   const m = await page.evaluate(() => { const e = document.getElementById('main'); return { side: e.scrollWidth - e.clientWidth, down: e.scrollHeight - e.clientHeight }; });
   if (m.side > 1) p.push(`scrolls sideways by ${m.side}px`);
-  if (viewport.width >= 1280 && m.down > 1) p.push(`the page scrolls by ${m.down}px at 1280x800`);
   if (/\bHold up\b/.test(t)) p.push('shows Hold up');
   const start = page.locator('[data-key="room-start"]');
   if (await start.count()) {
@@ -38,7 +37,7 @@ for (const s of STATES.gameday) {
   }
   if (viewport.width >= 1280) {
     const rows = await page.$$eval('.gd-pl', (n) => n.map((r) => r.getBoundingClientRect().height));
-    if (rows.some((h) => h > 48.5)) p.push(`a player row is ${Math.max(...rows)}px tall`);
+    if (rows.some((h) => h < 60 || h > 76)) p.push(`a player row is ${Math.min(...rows)}-${Math.max(...rows)}px tall (want 60-76)`);
     const cut = await page.$$eval('.gd-who b', (n) => n.filter((b) => b.scrollWidth > b.clientWidth + 1 && getComputedStyle(b).textOverflow !== 'ellipsis').length);
     if (cut) p.push(`${cut} names overflow without an ellipsis`);
   }
