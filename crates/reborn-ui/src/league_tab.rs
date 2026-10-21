@@ -175,35 +175,52 @@ const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 /// per team per page visit (league.js), never with every league refresh: twelve real logos are about 4 MB.
 #[tauri::command]
 pub async fn league_logo(team_id: u64) -> Option<String> {
+    backend_png("league-logos", team_id, format!("/live-assets/league/{team_id}.png")).await
+}
+
+/// One league player's portrait (game day, 2026-10-21), the same way as a logo: the backend's
+/// `/live-assets/league/portrait/<poid>.png`, kept a day in `cache/league-portraits/`.
+#[tauri::command]
+pub async fn league_portrait(poid: u64) -> Option<String> {
+    backend_png("league-portraits", poid, format!("/live-assets/league/portrait/{poid}.png")).await
+}
+
+async fn backend_png(dir: &'static str, id: u64, path: String) -> Option<String> {
     tauri::async_runtime::spawn_blocking(move || {
         let p = Platform::detect();
         let origin = identity::origin(&p).ok()?;
-        let dir = p.paths.cache_root().ok()?.join("league-logos");
-        let file = dir.join(format!("{team_id}.png"));
-        let fresh = std::fs::metadata(&file)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age < LOGO_MAX_AGE);
-        if !fresh {
-            let _ = std::fs::create_dir_all(&dir);
-            let part = dir.join(format!("{team_id}.png.part"));
-            let url = format!("{}/live-assets/league/{team_id}.png", origin.trim_end_matches('/'));
-            use reborn_core::net::Http;
-            match crate::http_client().get_to_file(&url, &part) {
-                Ok(n) if n > 0 && n <= LOGO_MAX_BYTES => {
-                    let _ = std::fs::rename(&part, &file);
-                }
-                _ => {
-                    let _ = std::fs::remove_file(&part);
-                }
-            }
-        }
-        logo_data_url(&std::fs::read(&file).ok()?)
+        let root = p.paths.cache_root().ok()?;
+        cached_png(&crate::http_client(), &root, dir, &id.to_string(), &origin, &path)
     })
     .await
     .ok()
     .flatten()
+}
+
+/// `<cache_root>/<dir>/<name>.png`, fetched from `origin` + `path` unless a copy younger than a day is there, as a
+/// `data:` URL when it is a PNG within the cap. A failed or empty download leaves nothing behind.
+fn cached_png(http: &dyn reborn_core::net::Http, cache_root: &std::path::Path, dir: &str, name: &str, origin: &str, path: &str) -> Option<String> {
+    let dir = cache_root.join(dir);
+    let file = dir.join(format!("{name}.png"));
+    let fresh = std::fs::metadata(&file)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < LOGO_MAX_AGE);
+    if !fresh {
+        let _ = std::fs::create_dir_all(&dir);
+        let part = dir.join(format!("{name}.png.part"));
+        let url = format!("{}{path}", origin.trim_end_matches('/'));
+        match http.get_to_file(&url, &part) {
+            Ok(n) if n > 0 && n <= LOGO_MAX_BYTES => {
+                let _ = std::fs::rename(&part, &file);
+            }
+            _ => {
+                let _ = std::fs::remove_file(&part);
+            }
+        }
+    }
+    logo_data_url(&std::fs::read(&file).ok()?)
 }
 
 /// `bytes` as a `data:` URL, only when they are a PNG no bigger than the backend allows.
@@ -250,6 +267,44 @@ mod tests {
         let mut big = PNG_MAGIC.to_vec();
         big.resize(LOGO_MAX_BYTES as usize + 1, 0);
         assert_eq!(logo_data_url(&big), None);
+    }
+
+    /// Serves one fixed body for every download and counts them.
+    struct FakeHttp {
+        body: Vec<u8>,
+        gets: std::sync::Mutex<Vec<String>>,
+    }
+    impl reborn_core::net::Http for FakeHttp {
+        fn get_text(&self, _url: &str) -> reborn_core::Result<reborn_core::net::HttpResponse> {
+            unreachable!()
+        }
+        fn get_to_file(&self, url: &str, to: &std::path::Path) -> reborn_core::Result<u64> {
+            self.gets.lock().unwrap().push(url.to_string());
+            std::fs::write(to, &self.body)?;
+            Ok(self.body.len() as u64)
+        }
+        fn post_json(&self, _url: &str, _body: &[u8], _bearer: Option<&str>) -> reborn_core::Result<reborn_core::net::HttpResponse> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn a_portrait_is_fetched_once_into_its_own_cache_and_only_a_png_is_drawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut png = PNG_MAGIC.to_vec();
+        png.extend_from_slice(b"face");
+        let http = FakeHttp { body: png.clone(), gets: Default::default() };
+        let url = cached_png(&http, dir.path(), "league-portraits", "361", "https://api.test", "/live-assets/league/portrait/361.png");
+        assert!(url.unwrap().starts_with("data:image/png;base64,"));
+        assert_eq!(std::fs::read(dir.path().join("league-portraits").join("361.png")).unwrap(), png);
+        cached_png(&http, dir.path(), "league-portraits", "361", "https://api.test/", "/live-assets/league/portrait/361.png");
+        assert_eq!(*http.gets.lock().unwrap(), vec!["https://api.test/live-assets/league/portrait/361.png".to_string()], "a fresh file is not fetched again");
+
+        let html = FakeHttp { body: b"<html>captcha</html>".to_vec(), gets: Default::default() };
+        assert_eq!(cached_png(&html, dir.path(), "league-portraits", "11", "https://api.test", "/live-assets/league/portrait/11.png"), None);
+        let empty = FakeHttp { body: Vec::new(), gets: Default::default() };
+        assert_eq!(cached_png(&empty, dir.path(), "league-portraits", "12", "https://api.test", "/live-assets/league/portrait/12.png"), None);
+        assert!(!dir.path().join("league-portraits").join("12.png").exists(), "an empty answer leaves nothing behind");
     }
 
     #[test]
