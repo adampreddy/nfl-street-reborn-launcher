@@ -683,6 +683,9 @@ const PREGAME: &[&str] = &[
 /// the launcher's own page should decide (Launcher, Browsing, Offline, Menus).
 pub fn activity_for(snap: &Snapshot, now_unix: i64) -> Option<Activity> {
     if let Some(m) = &snap.matched {
+        if let Some(league) = m.league.as_ref().filter(|l| l.is_object()) {
+            return league_activity(m, league, now_unix);
+        }
         let mode = mode_of(&m.mode);
         // The opponent's nickname when they set one (what they chose to be called), else their Discord name.
         let shown = shown_name(m.opponent.nickname.as_deref(), &m.opponent.display_name);
@@ -717,7 +720,8 @@ pub fn activity_for(snap: &Snapshot, now_unix: i64) -> Option<Activity> {
 
     if let Some(r) = &snap.room {
         let players = r.members.len().min(u8::MAX as usize) as u8;
-        return Some(Activity::Lobby { mode: mode_of(&r.mode), code: r.code.clone(), players, capacity: 2 });
+        let mode = if r.league.as_ref().is_some_and(|l| l.is_object()) { Mode::League } else { mode_of(&r.mode) };
+        return Some(Activity::Lobby { mode, code: r.code.clone(), players, capacity: 2 });
     }
 
     if let Some(t) = &snap.ticket {
@@ -725,6 +729,37 @@ pub fn activity_for(snap: &Snapshot, now_unix: i64) -> Option<Activity> {
         return Some(Activity::Queued { mode: mode_of(&t.mode), start_unix: start });
     }
 
+    None
+}
+
+/// A league fixture's presence (Adam 10-22: it must read as a league game). The server names the teams in `league`
+/// (`home`, `away`, `week_label`) once the fixture's league room has been opened; an older server sends only the week.
+fn league_activity(m: &MatchView, league: &serde_json::Value, now_unix: i64) -> Option<Activity> {
+    let text = |k: &str| league.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let matchup = match (text("away"), text("home")) {
+        (Some(a), Some(h)) => format!("{a} vs {h}"),
+        _ => {
+            let shown = shown_name(m.opponent.nickname.as_deref(), &m.opponent.display_name);
+            if shown.trim().is_empty() { "vs an opponent".to_string() } else { format!("vs {shown}") }
+        }
+    };
+    let week = text("week_label").or_else(|| league.get("week").and_then(|v| v.as_u64()).filter(|w| *w > 0).map(|w| format!("Week {w}")));
+    if PREGAME.contains(&m.relay_state.as_str()) {
+        return Some(Activity::LeagueGame { matchup, week, starting: true, series: None, start_unix: None });
+    }
+    if m.relay_state == "running" || m.relay_state == "intermission" {
+        let seat = m.seat as usize;
+        let wins = |s: usize| m.series.get(s).copied().unwrap_or(0).max(m.series_live.get(s).copied().unwrap_or(0));
+        let (mine, theirs) = (wins(seat), wins(1 - seat.min(1)));
+        let series = (m.best_of > 1 && seat <= 1).then(|| Series {
+            game: (mine + theirs + 1).min(m.best_of),
+            best_of: m.best_of,
+            wins_self: mine,
+            wins_opponent: theirs,
+        });
+        let start = m.started_at.as_deref().and_then(iso_to_unix).unwrap_or(now_unix);
+        return Some(Activity::LeagueGame { matchup, week, starting: false, series, start_unix: Some(start) });
+    }
     None
 }
 
@@ -958,6 +993,36 @@ mod tests {
         match activity_for(&snap(MATCHED), 0) {
             Some(Activity::Preparing { mode: Mode::Casual, opponent, .. }) => assert_eq!(opponent, "Jock"),
             other => panic!("a pairing match should be Preparing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_league_fixture_reads_as_a_league_game_with_the_teams_the_server_names() {
+        let league = |extra: serde_json::Value| {
+            let mut v: serde_json::Value = serde_json::from_str(MATCHED).unwrap();
+            let mut l = serde_json::json!({ "league_id": 36, "fixture_id": 2614, "week": 1 });
+            for (k, x) in extra.as_object().unwrap() { l[k] = x.clone(); }
+            v["match"]["league"] = l;
+            serde_json::from_value::<Snapshot>(v).unwrap()
+        };
+        let named = league(serde_json::json!({ "home": "Wildcats", "away": "Revenants", "week_label": "Week 1", "season": 4 }));
+        match activity_for(&named, 0) {
+            Some(Activity::LeagueGame { matchup, week, starting: true, .. }) => {
+                assert_eq!((matchup.as_str(), week.as_deref()), ("Revenants vs Wildcats", Some("Week 1")));
+            }
+            other => panic!("a league pairing should be LeagueGame, got {other:?}"),
+        }
+        // An older server: no team names, only the week -> the opponent and "Week 1".
+        match activity_for(&league(serde_json::json!({})), 0) {
+            Some(Activity::LeagueGame { matchup, week, .. }) => assert_eq!((matchup.as_str(), week.as_deref()), ("vs Jock", Some("Week 1"))),
+            other => panic!("{other:?}"),
+        }
+        let mut running: serde_json::Value = serde_json::from_str(MATCHED).unwrap();
+        running["match"]["relay_state"] = serde_json::json!("running");
+        running["match"]["league"] = serde_json::json!({ "league_id": 36, "fixture_id": 2614, "week": 1, "home": "Wildcats", "away": "Revenants" });
+        match activity_for(&serde_json::from_value(running).unwrap(), 0) {
+            Some(Activity::LeagueGame { starting: false, matchup, .. }) => assert_eq!(matchup, "Revenants vs Wildcats"),
+            other => panic!("{other:?}"),
         }
     }
 

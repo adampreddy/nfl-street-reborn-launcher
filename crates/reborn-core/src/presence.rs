@@ -36,6 +36,8 @@ use std::fmt;
 pub enum Mode {
     Casual,
     Ranked,
+    /// A League edition room (Adam 10-22: Discord must show it is a league game).
+    League,
 }
 
 impl Mode {
@@ -43,6 +45,7 @@ impl Mode {
         match self {
             Mode::Casual => "Casual",
             Mode::Ranked => "Ranked",
+            Mode::League => "League",
         }
     }
 }
@@ -87,6 +90,15 @@ pub enum Activity {
         series: Option<Series>,
         score: Option<(u32, u32)>,
         start_unix: i64,
+    },
+    /// A league fixture (Adam 10-22), from matched to the end of the series: always reads as a league game.
+    /// `matchup` is "Away vs Home" when the server names the teams, else "vs <opponent>".
+    LeagueGame {
+        matchup: String,
+        week: Option<String>,
+        starting: bool,
+        series: Option<Series>,
+        start_unix: Option<i64>,
     },
 }
 
@@ -182,8 +194,9 @@ pub fn payload(activity: &Activity) -> Payload {
             details: format!("In a {} lobby", mode.label().to_ascii_lowercase()),
             state: if *players >= *capacity { "Ready to start".into() } else { "Waiting for a player".into() },
             party: Some((*players, *capacity)),
-            // The code, and only the code. Never the match id, never a token.
-            join_secret: Some(code.clone()),
+            // The code, and only the code. Never the match id, never a token. A league room is for its two teams
+            // only (the server refuses anyone else), so it is not advertised as joinable.
+            join_secret: (*mode != Mode::League).then(|| code.clone()),
             ..base
         },
 
@@ -217,6 +230,31 @@ pub fn payload(activity: &Activity) -> Payload {
                 small_image: LOGO.to_string(),
                 small_text: mode.label().to_string(),
                 start_unix: Some(*start_unix),
+                ..base
+            }
+        }
+
+        Activity::LeagueGame { matchup, week, starting, series, start_unix } => {
+            let week = week.as_deref().map(str::trim).filter(|w| !w.is_empty());
+            let (details, state) = if *starting {
+                (week.map_or("League game".to_string(), |w| format!("League game · {w}")), format!("{matchup} · starting"))
+            } else {
+                let game = series.map(|s| format!("Game {} of {} ({}-{})", s.game, s.best_of, s.wins_self, s.wins_opponent));
+                let state = match (week, game) {
+                    (Some(w), Some(g)) => format!("{w} · {g}"),
+                    (Some(w), None) => w.to_string(),
+                    (None, Some(g)) => g,
+                    (None, None) => String::new(),
+                };
+                (format!("League game · {matchup}"), state)
+            };
+            Payload {
+                details,
+                state,
+                large_text: "NFL Street Reborn League".into(),
+                small_image: LOGO.to_string(),
+                small_text: "League".into(),
+                start_unix: *start_unix,
                 ..base
             }
         }
@@ -291,6 +329,8 @@ mod tests {
                 score: Some((28, 21)),
                 start_unix: 1,
             },
+            Activity::LeagueGame { matchup: "Revenants vs Wildcats".into(), week: Some("Week 1".into()), starting: false,
+                series: None, start_unix: Some(1) },
         ];
         for a in all {
             let got = p(a.clone());
@@ -441,4 +481,22 @@ mod tests {
         assert!(!all.contains("nonce"), "{all}");
         assert!(!all.contains("token"), "{all}");
     }
+
+    #[test]
+    fn a_league_game_says_league_game_with_the_teams_and_week_and_is_never_joinable() {
+        let starting = p(Activity::LeagueGame { matchup: "Revenants vs Wildcats".into(), week: Some("Week 1".into()),
+            starting: true, series: None, start_unix: None });
+        assert_eq!((starting.details.as_str(), starting.state.as_str()), ("League game · Week 1", "Revenants vs Wildcats · starting"));
+        let s = Series { game: 2, best_of: 3, wins_self: 1, wins_opponent: 0 };
+        let playing = p(Activity::LeagueGame { matchup: "Revenants vs Wildcats".into(), week: Some("Week 1".into()),
+            starting: false, series: Some(s), start_unix: Some(9) });
+        assert_eq!(playing.details, "League game · Revenants vs Wildcats");
+        assert_eq!(playing.state, "Week 1 · Game 2 of 3 (1-0)");
+        assert_eq!((playing.small_text.as_str(), playing.start_unix, playing.join_secret.clone()), ("League", Some(9), None));
+        let bare = p(Activity::LeagueGame { matchup: "vs Jock".into(), week: None, starting: false, series: None, start_unix: None });
+        assert_eq!((bare.details.as_str(), bare.state.as_str()), ("League game · vs Jock", ""));
+        let lobby = p(Activity::Lobby { mode: Mode::League, code: "K7QP2M".into(), players: 1, capacity: 2 });
+        assert_eq!((lobby.details.as_str(), lobby.join_secret.clone()), ("In a league lobby", None));
+    }
+
 }
