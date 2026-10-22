@@ -1072,7 +1072,7 @@ impl Session {
         };
         let mut dolphin_doc=crate::ini::IniDocument::parse(&dolphin_text);
         let user_dir = config_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| config_dir.clone());
-        let card = memory_card_overlay(&dolphin_doc, &user_dir);
+        let card = memory_card_overlay(&dolphin_doc, &user_dir, req.build);
         let mut changed = false;
         let ports = if written.no_controller {
             // A pad that turns up after the scan reaches the game only if
@@ -2113,8 +2113,22 @@ pub fn release_player_sections(
 /// law's business: one inside a Dolphin user folder is removed for the
 /// default, one elsewhere is a player's own choice and stays. A working slot
 /// (a raw card, a folder of GCIs) is left as it is.
-pub fn memory_card_overlay(doc: &crate::ini::IniDocument, _user_dir: &Path) -> crate::ini::Overlay {
+///
+/// ⛔ The League edition never gets a card: both slots are closed (Adam, 2026-10-22: "Make it so NSRS04 starts with
+/// memory card off always"). NFL Street 2 profile saves are public, so the League disc reads a member's normal
+/// GN7E69 profile from the shared card, and that profile's gear table dresses League players as the normal roster's
+/// same PGID. Closed here, in Dolphin.ini, because that is the layer a netplay host sends: a game ini alone would
+/// not reach a league room. The next normal launch opens slot A again by the rule below (255 becomes 1).
+pub fn memory_card_overlay(doc: &crate::ini::IniDocument, _user_dir: &Path, build: crate::runtime::GameBuild) -> crate::ini::Overlay {
     let mut overlay = crate::ini::Overlay::new();
+    if build == crate::runtime::GameBuild::League {
+        for key in ["SlotA", "SlotB"] {
+            if doc.get("Core", key).map(str::trim) != Some("255") {
+                overlay.entry("Core".into()).or_default().insert(key.into(), "255".into());
+            }
+        }
+        return overlay;
+    }
     let slot = doc.get("Core", "SlotA").map(str::trim).unwrap_or("");
     if !(slot.is_empty() || slot == "255" || slot == "0") {
         return overlay;
@@ -2897,20 +2911,62 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let user = dir.path();
         let none = crate::ini::IniDocument::parse("[Core]\nSlotA = 255\nSlotB = 255\n");
-        let overlay = memory_card_overlay(&none, user);
+        let overlay = memory_card_overlay(&none, user, crate::runtime::GameBuild::Offline);
         assert_eq!(overlay["Core"]["SlotA"], "1");
         assert!(!overlay["Core"].contains_key("MemcardAPath"), "no path: Dolphin's default inside the user folder is the path law");
         assert!(!overlay["Core"].contains_key("SlotB"), "slot B stays as it was");
         // no [Core] section at all: the same card
-        assert_eq!(memory_card_overlay(&crate::ini::IniDocument::parse("[Display]\n"), user)["Core"]["SlotA"], "1");
+        assert_eq!(memory_card_overlay(&crate::ini::IniDocument::parse("[Display]\n"), user, crate::runtime::GameBuild::Offline)["Core"]["SlotA"], "1");
         // a folder of GCIs, or a raw card: nothing to change
-        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 8\n"), user).is_empty());
-        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 1\nMemcardAPath = C:/cards/A.raw\n"), user).is_empty());
+        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 8\n"), user, crate::runtime::GameBuild::Offline).is_empty());
+        assert!(memory_card_overlay(&crate::ini::IniDocument::parse("[Core]\nSlotA = 1\nMemcardAPath = C:/cards/A.raw\n"), user, crate::runtime::GameBuild::Offline).is_empty());
         // slot none with a card path named: the slot is turned on; the path is the path law's business
         let doc = crate::ini::IniDocument::parse("[Core]\nSlotA = 255\nMemcardAPath = D:/cards/A.raw\n");
-        let on = memory_card_overlay(&doc, user);
+        let on = memory_card_overlay(&doc, user, crate::runtime::GameBuild::Offline);
         assert_eq!(on["Core"]["SlotA"], "1");
         assert!(!on["Core"].contains_key("MemcardAPath"));
+    }
+
+    /// The League edition starts with no memory card, every time (Adam, 2026-10-22: "Make it so NSRS04 starts with
+    /// memory card off always"). NFL Street 2 profile saves are public, so the League disc loaded a member's normal
+    /// GN7E69 profile from the shared card and its gear table dressed League players as the normal roster's same
+    /// PGID (Tuna's Ja'Marr Chase in Daron Bland's gear). Dolphin.ini is the layer netplay sends from the host, so
+    /// the slot is closed there, for offline and league rooms alike. The next normal launch gives the card back.
+    #[test]
+    fn a_league_launch_starts_with_no_memory_card_and_a_normal_launch_after_it_gets_the_card_back() {
+        use crate::runtime::GameBuild;
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path();
+        let carded = crate::ini::IniDocument::parse("[Core]
+SlotA = 1
+SlotB = 255
+");
+        let league = memory_card_overlay(&carded, user, GameBuild::League);
+        assert_eq!(league["Core"]["SlotA"], "255");
+        assert!(!league["Core"].contains_key("SlotB"), "slot B was closed already: nothing to write");
+        // a card in slot B, or a folder of GCIs in A, is closed as well: any card can carry a normal profile
+        let both = crate::ini::IniDocument::parse("[Core]
+SlotA = 8
+SlotB = 1
+");
+        let league = memory_card_overlay(&both, user, GameBuild::League);
+        assert_eq!((league["Core"]["SlotA"].as_str(), league["Core"]["SlotB"].as_str()), ("255", "255"));
+        // already closed: nothing to write
+        let closed = crate::ini::IniDocument::parse("[Core]
+SlotA = 255
+SlotB = 255
+");
+        let mut doc = closed.clone();
+        assert!(doc.merge(&memory_card_overlay(&closed, user, GameBuild::League)).is_noop());
+        // the round trip: a League session, then a normal one, and the normal game has its card again
+        let mut doc = carded.clone();
+        doc.merge(&memory_card_overlay(&carded, user, GameBuild::League));
+        assert_eq!(doc.get("Core", "SlotA"), Some("255"));
+        for build in [GameBuild::Offline, GameBuild::Online] {
+            let mut after = doc.clone();
+            after.merge(&memory_card_overlay(&doc, user, build));
+            assert_eq!(after.get("Core", "SlotA"), Some("1"), "{build:?}");
+        }
     }
 
     /// The launch gives the single-instance lock back before the network work.
