@@ -8,7 +8,7 @@
 import { bridge, call, el, get, quietCall, reason } from './shell.js';
 import { seriesOverModel, drawSeriesOver } from './series-over.js';
 import { avatar, teamLogo } from './match-rows.js';
-import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLine, inviteLink, modeLine, seekLine, seriesLine, standing } from './online-model.js';
+import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLine, inviteLink, modeLine, seekLine, seriesLine, standing, BAN_TEAMS, banStepOpen, banWithin, banLine } from './online-model.js';
 import { openPanel } from './menu.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
@@ -506,6 +506,12 @@ setInterval(() => {
     accept.hidden = !left;
     if (left) accept.textContent = left;
   }
+  const ban = section.querySelector('.on-tm[data-ban-deadline]');
+  if (ban) {
+    const left = banWithin(ban.dataset.banDeadline, Date.now());
+    ban.hidden = !left;
+    if (left) ban.textContent = left;
+  }
 }, 1000);
 
 function drawQueued(t) {
@@ -588,6 +594,25 @@ function crewLine(m) {
   return el('span', { class: 'on-crew', text: `${party.length} players · with ${others.join(', ')}` });
 }
 
+// Ranked team bans: one tap bans a team (tap another to change it) until both have picked or the 20 s run out. Your
+// opponent's ban is hidden until then; a team nobody banned stays in team select.
+function banPicker(m) {
+  const foot = el('div', { class: 'on-vs-foot on-ban' },
+    el('span', { class: 'k-label', text: 'Ban a team' }));
+  const grid = el('div', { class: 'on-ban-grid', role: 'group', 'aria-label': 'Ban a team' });
+  for (const t of BAN_TEAMS) {
+    const on = m.your_ban === t.id;
+    grid.append(el('button', {
+      type: 'button', class: `on-ban-team${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false', 'data-key': `ban-${t.id}`,
+      onclick: () => act('mm_match_action', { matchId: m.id, action: 'ban', value: t.id }),
+    }, teamLogo(t, 'on-ban-logo'), el('span', { text: t.name })));
+  }
+  foot.append(grid);
+  const left = banWithin(m.relay_deadline, Date.now());
+  if (left) foot.append(el('span', { class: 'on-tm num', 'data-ban-deadline': m.relay_deadline, text: left }));
+  return foot;
+}
+
 // The matchup card (spec §3.3–§3.6). Only called for a match that is not over (complete, void, abandoned, held).
 function drawMatch(m, chat, relayError, snap) {
   const words = RELAY[m.relay_state] ?? 'Starting the game';
@@ -615,9 +640,13 @@ function drawMatch(m, chat, relayError, snap) {
     if (left) foot.append(el('span', { class: 'on-tm num', 'data-deadline': m.relay_deadline, text: left }));
   } else if (pairing) {
     mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), `You're in. Waiting on ${opp}…`));
+  } else if (banStepOpen(m)) {
+    foot = banPicker(m);
   } else if (m.relay_state !== 'running') {
     mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), words), el('span', { class: 'on-tm', text: 'Your game opens on its own' }));
   }
+  const bans = banLine(m);
+  if (bans) mid.append(el('span', { class: 'on-tm on-bans', text: bans }));
   // The relay's own failure (the room would not open, the code would not send) in its own words.
   if (relayError) mid.append(el('p', { class: 'refusal', text: relayError }));
   const mine = eloBits(rankInfo?.elo);

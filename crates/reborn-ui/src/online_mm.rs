@@ -867,6 +867,28 @@ pub fn current_match_league() -> Option<u64> {
     m.league.as_ref()?.get("fixture_id")?.as_u64()
 }
 
+/// The running ranked match's team bans, once the ban step is over: the list the ranked seed is derived from
+/// (`dolphin_settings::netplay_boot_state`). `None` for every other match, and while the step is still open. The same
+/// filters as [`current_match_id`].
+pub fn current_match_bans() -> Option<Vec<u16>> {
+    let s = lock(&STATE);
+    let m = s.snapshot.as_ref()?.matched.as_ref()?;
+    if matches!(m.relay_state.as_str(), "complete" | "void" | "abandoned" | "held") || m.extra_player() || !m.ban_enabled {
+        return None;
+    }
+    let bans = reborn_core::ban_seed::normalize(m.bans.as_deref()?);
+    (!bans.is_empty()).then_some(bans)
+}
+
+/// Can this launcher take part in a ranked ban step? Its installed ranked seed must be one `ban_seed` has located.
+fn ranked_can_ban() -> bool {
+    let p = Platform::detect();
+    let Ok(data) = p.paths.data_root() else { return false };
+    crate::dolphin_settings::boot_state_path(&data, Some("ranked"))
+        .map(|seed| reborn_core::ban_seed::can_ban(&seed))
+        .unwrap_or(false)
+}
+
 /// Everything the Online page shows, in one read.
 #[tauri::command]
 pub fn mm_state() -> serde_json::Value {
@@ -957,6 +979,8 @@ fn match_json(m: &MatchView) -> serde_json::Value {
         "edition": m.edition, "ruleset": m.ruleset, "league": m.league,
         // Adam 10-09: the series-over screen offers Rematch only when the server does (true from an older server).
         "rematch_available": m.rematch_available,
+        // Ranked team bans: the page shows the ban picker while relay_state is `field` and ban_enabled.
+        "ban_enabled": m.ban_enabled, "your_ban": m.your_ban, "bans": m.bans,
         "seed_kind": crate::dolphin_settings::seed_kind_or_default(m.seed_kind.as_deref()),
         // The series-over screen (series spec 2026-10-02 §3.3): null/empty from a server before the series build.
         "outcome": m.outcome, "series_live": m.series_live, "rules": m.rules,
@@ -974,7 +998,10 @@ fn match_json(m: &MatchView) -> serde_json::Value {
 pub async fn mm_queue(mode: String, seed_kind: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mode = parse_mode(&mode)?;
-        let r = with_client(|c| c.enqueue(mode, None, seed_kind.as_deref()))?;
+        // Ranked team bans: only a launcher whose ranked seed can be derived says so (the hash is about 16 MB).
+        let can_ban = mode == Mode::Ranked && ranked_can_ban();
+        mm_log(&format!("queue {mode:?} can_ban={can_ban}"));
+        let r = with_client(|c| c.enqueue_with(mode, None, seed_kind.as_deref(), can_ban))?;
         Ok(serde_json::json!({ "matched": r.matched, "match_id": r.match_id }))
     })
     .await
@@ -1051,6 +1078,10 @@ pub async fn mm_match_action(match_id: String, action: String, value: Option<ser
             "leave" => MatchAction::Leave,
             "chat" => MatchAction::Chat(value.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string()),
             "rematch" => MatchAction::Rematch,
+            "ban" => match value.as_ref().and_then(|v| v.as_u64()).and_then(|v| u16::try_from(v).ok()).filter(|t| reborn_core::ban_seed::is_bannable(*t)) {
+                Some(team) => MatchAction::Ban(team),
+                None => return Err("That isn't a team you can ban.".to_string()),
+            },
             _ => return Err("That isn't something you can do from here.".to_string()),
         };
         with_client(|c| c.match_action(&match_id, a))

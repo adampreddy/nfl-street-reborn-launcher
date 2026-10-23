@@ -161,3 +161,20 @@ test('your standing comes from the leaderboard answer, in the shape eloBits read
     assert.equal(boardStanding(none), null, `no standing in ${JSON.stringify(none)}`);
   }
 });
+
+test('ranked bans: 32 teams, the open step, the countdown and the line', async () => {
+  const { BAN_TEAMS, banStepOpen, banWithin, banLine } = await import('./online-model.js');
+  assert.equal(BAN_TEAMS.length, 32);
+  assert.deepEqual([...new Set(BAN_TEAMS.map((t) => t.id))].sort((a, b) => a - b), Array.from({ length: 32 }, (_, i) => i + 1));
+  assert.equal(BAN_TEAMS.find((t) => t.id === 14).logo_url, '/live-assets/teams/14-128.png');
+  assert.equal(banStepOpen({ ban_enabled: true, relay_state: 'field' }), true);
+  assert.equal(banStepOpen({ ban_enabled: true, relay_state: 'ready' }), false);
+  assert.equal(banStepOpen({ ban_enabled: false, relay_state: 'field' }), false);
+  const now = Date.parse('2026-10-23T20:00:00.000Z');
+  assert.equal(banWithin('2026-10-23T20:00:14.000Z', now), '0:14 to ban');
+  assert.equal(banWithin('2026-10-23T19:59:59.000Z', now), null);
+  assert.equal(banLine({ ban_enabled: true, bans: [13, 25] }), 'Banned: Eagles, Ravens');
+  assert.equal(banLine({ ban_enabled: true, bans: [] }), 'No bans');
+  assert.equal(banLine({ ban_enabled: true, bans: null }), null, 'still open');
+  assert.equal(banLine({ ban_enabled: false, bans: [13] }), null);
+});

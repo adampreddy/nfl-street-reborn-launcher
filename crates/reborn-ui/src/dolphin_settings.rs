@@ -436,6 +436,17 @@ pub(crate) fn boot_state_path(data_root:&std::path::Path,seed_kind:Option<&str>)
 fn netplay_boot_state(p:&Platform,seed_kind:Option<&str>)->Option<std::path::PathBuf>{
  let data=p.paths.data_root().ok()?;
  let seed=boot_state_path(&data,seed_kind)?;
+ // Ranked team bans: a ranked match whose ban step is over boots ranked.s01 with those teams out of team select, and
+ // preflight hashes that same derived file, so the server's seed comparison still covers it. No fallback: a ban seed
+ // that cannot be made is no seed (seed_ok false), never the plain one the other PC is not booting.
+ if seed_kind.map(str::trim)==Some("ranked") {
+  if let Some(bans)=crate::online_mm::current_match_bans() {
+   return match reborn_core::ban_seed::ensure(&seed,&data.join("cache").join("ban-seeds"),&bans) {
+    Ok(path)=>{ crate::online_mm::mm_log(&format!("ban seed {bans:?}: {}",path.display())); Some(path) }
+    Err(e)=>{ crate::online_mm::mm_log(&format!("ban seed {bans:?} FAILED: {e}")); None }
+   };
+  }
+ }
  if seed.is_file() { return Some(seed); }
  let fallback=data.join("library/online/seed").join("regular.s01");
  (seed_kind.map(str::trim)==Some("ranked") && fallback.is_file()).then_some(fallback)

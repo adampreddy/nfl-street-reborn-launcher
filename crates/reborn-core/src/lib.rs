@@ -50,6 +50,7 @@
 #![warn(missing_debug_implementations)]
 
 pub mod backend;
+pub mod ban_seed;
 pub mod capture;
 pub mod content;
 pub mod controller;

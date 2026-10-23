@@ -176,6 +176,20 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
   .on-vs-match .avatar.on-av{width:88px;height:88px;font-size:36px}
   .on-vs-match .team-logo.on-plogo{width:40px;height:40px}
 }
+/* ranked team bans (online-mm.js banPicker): while the step is open the card stacks like the narrow layout (faces and
+   VS on one row, the card grows), and the 32 teams take a full-width row of their own under it, 8 by 4 */
+.on-vs:has(.on-ban){min-height:0}
+.on-vs-in.on-vs-match:has(.on-ban){position:relative;inset:auto;padding:52px 24px 22px;row-gap:14px}
+.on-vs-match:has(.on-ban)>.on-p,.on-vs-match:has(.on-ban)>.on-mid{grid-row:1}
+.on-vs-foot.on-ban{grid-row:2;grid-column:1/-1;width:100%;margin-top:0}
+.on-ban-grid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;width:100%}
+@media (max-width:1000px){.on-ban-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.on-ban-team{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:0;height:62px;padding:6px 4px;border-radius:8px;border:1px solid var(--stroke);background:var(--pill-bg);color:var(--fg);font:inherit;font-size:11px;cursor:pointer}
+.on-ban-team span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.on-ban-team:hover,.on-ban-team:focus-visible{border-color:var(--fg-3)}
+.on-ban-team.on{border-color:var(--red);background:color-mix(in srgb,var(--red) 18%,transparent)}
+.on-ban-team .team-logo.on-ban-logo{width:28px;height:28px;flex:none;font-size:11px}
+.on-bans{margin-top:6px}
 .on-acts{margin-top:12px;display:flex;justify-content:center;gap:10px}
 .on-acts .btn{height:48px;min-width:140px}
 .on-tm{font-size:12px;color:var(--fg-3)}

@@ -163,3 +163,34 @@ export function boardStanding(answer) {
   if (!r) return null;
   return { elo: { rating: int(r.elo), rank: int(r.rank), week_delta: int(r.delta_week) }, team: r.team && typeof r.team === 'object' ? r.team : null };
 }
+
+// ---- Ranked team bans (backend migration 041) ----
+
+/** The 32 bannable teams (the server's TGIDs 1..32), A to Z by nickname, with the backend's logo for each. */
+export const BAN_TEAMS = [
+  [15, '49ers'], [1, 'Bears'], [2, 'Bengals'], [3, 'Bills'], [4, 'Broncos'], [5, 'Browns'], [6, 'Buccaneers'],
+  [7, 'Cardinals'], [8, 'Chargers'], [9, 'Chiefs'], [10, 'Colts'], [26, 'Commanders'], [11, 'Cowboys'], [12, 'Dolphins'],
+  [13, 'Eagles'], [14, 'Falcons'], [16, 'Giants'], [17, 'Jaguars'], [18, 'Jets'], [19, 'Lions'], [20, 'Packers'],
+  [21, 'Panthers'], [22, 'Patriots'], [23, 'Raiders'], [24, 'Rams'], [25, 'Ravens'], [27, 'Saints'], [28, 'Seahawks'],
+  [29, 'Steelers'], [32, 'Texans'], [30, 'Titans'], [31, 'Vikings'],
+].map(([id, name]) => ({ id, name, logo_url: `/live-assets/teams/${id}-128.png` }));
+
+const BAN_NAME = new Map(BAN_TEAMS.map((t) => [t.id, t.name]));
+
+/** The ban step is open on this match: show the picker. */
+export function banStepOpen(m) {
+  return m?.ban_enabled === true && m.relay_state === 'field';
+}
+
+/** "0:14 to ban", or null once the deadline has passed. */
+export function banWithin(deadline, nowMs) {
+  const t = typeof deadline === 'string' ? Date.parse(deadline) : NaN;
+  return Number.isFinite(t) && t > nowMs ? `${clock(t - nowMs)} to ban` : null;
+}
+
+/** "Banned: Eagles, Ravens" once the step is over, "No bans" when nobody picked, null on a match without bans. */
+export function banLine(m) {
+  if (m?.ban_enabled !== true || !Array.isArray(m.bans)) return null;
+  const names = m.bans.map((id) => BAN_NAME.get(id)).filter(Boolean);
+  return names.length ? `Banned: ${names.join(', ')}` : 'No bans';
+}

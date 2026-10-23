@@ -219,6 +219,14 @@ pub struct MatchView {
     /// an older server, which always offered one: true.
     #[serde(default = "offered")]
     pub rematch_available: bool,
+    /// Ranked team bans (backend migration 041): this match walks `field` as a blind ban step. False from an older
+    /// server, and on every match whose two launchers did not both say `can_ban`.
+    pub ban_enabled: bool,
+    /// This seat's ban while the step is open (TGID 1..32), or none.
+    pub your_ban: Option<u16>,
+    /// Both seats' bans, sorted and unique, once the step is over; what the ban seed is derived from. `None` while the
+    /// step is open and on a match without bans.
+    pub bans: Option<Vec<u16>>,
 }
 
 fn offered() -> bool {
@@ -262,6 +270,9 @@ impl Default for MatchView {
             league: Default::default(),
             league_game_version: Default::default(),
             rematch_available: offered(),
+            ban_enabled: false,
+            your_ban: None,
+            bans: None,
         }
     }
 }
@@ -498,11 +509,21 @@ impl<'a> Client<'a> {
     /// ranked series is always Quick games. Anything but `pickup` is sent as `regular`, and a server that predates the
     /// field ignores it (it pairs Quick games only, which is what it always did).
     pub fn enqueue(&self, mode: Mode, region: Option<&str>, seed_kind: Option<&str>) -> Result<QueueReply, MmError> {
+        self.enqueue_with(mode, region, seed_kind, false)
+    }
+
+    /// [`Client::enqueue`], saying whether this launcher can derive a ranked ban seed (`ban_seed::can_ban`). Sent only
+    /// for ranked and only when true: the server runs the ban step only when both tickets carry it, and a server that
+    /// predates bans ignores the field.
+    pub fn enqueue_with(&self, mode: Mode, region: Option<&str>, seed_kind: Option<&str>, can_ban: bool) -> Result<QueueReply, MmError> {
         let mut body = serde_json::json!({ "mode": if mode == Mode::Ranked { "ranked" } else { "casual" }, "region": region });
         if mode == Mode::Casual {
             if let Some(k) = seed_kind {
                 body["seed_kind"] = serde_json::json!(known_seed_kind(k));
             }
+        }
+        if mode == Mode::Ranked && can_ban {
+            body["can_ban"] = serde_json::json!(true);
         }
         self.post("/v1/mm/queue", body)
     }
@@ -586,6 +607,7 @@ impl<'a> Client<'a> {
             MatchAction::LeaveWith(r) => ("leave", serde_json::json!({ "reason": r.as_str() })),
             MatchAction::Chat(ref t) => ("chat", serde_json::json!({ "text": t })),
             MatchAction::Rematch => ("rematch", serde_json::json!({})),
+            MatchAction::Ban(team) => ("ban", serde_json::json!({ "team": team })),
         };
         self.post(&format!("/v1/mm/match/{}/{}", url_path(match_id), path), body)
     }
@@ -627,6 +649,8 @@ pub enum MatchAction {
     LeaveWith(crate::series::LeaveReason),
     Chat(String),
     Rematch,
+    /// Ranked team bans: this seat bans one team (TGID 1..32) during the ban step.
+    Ban(u16),
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1184,6 +1208,37 @@ mod tests {
         assert_eq!(sent["mode"], "ranked");
         assert!(sent.get("field").is_none(), "no field is sent: {sent}");
         assert!(sent.get("seed_kind").is_none(), "ranked never sends a game kind: {sent}");
+    }
+
+    #[test]
+    fn can_ban_is_sent_only_for_ranked_and_only_when_true() {
+        let url = format!("{ORIGIN}/v1/mm/queue");
+        let http = FakeHttp::default().reply(&url, 200, QUEUE_MATCHED);
+        let c = Client::new(&http, ORIGIN, "t");
+        let sent = |http: &FakeHttp| serde_json::from_slice::<serde_json::Value>(&http.last_body().unwrap()).unwrap();
+        c.enqueue_with(Mode::Ranked, None, None, true).unwrap();
+        assert_eq!(sent(&http)["can_ban"], true);
+        c.enqueue_with(Mode::Ranked, None, None, false).unwrap();
+        assert!(sent(&http).get("can_ban").is_none());
+        c.enqueue_with(Mode::Casual, None, None, true).unwrap();
+        assert!(sent(&http).get("can_ban").is_none(), "casual never bans");
+        c.enqueue(Mode::Ranked, None, None).unwrap();
+        assert!(sent(&http).get("can_ban").is_none(), "the old call is today's body");
+    }
+
+    #[test]
+    fn a_ban_posts_the_team_and_a_match_view_reads_the_ban_fields() {
+        let url = format!("{ORIGIN}/v1/mm/match/m1/ban");
+        let http = FakeHttp::default().reply(&url, 200, r#"{"ok":true,"ban":13,"decided":false}"#);
+        Client::new(&http, ORIGIN, "t").match_action("m1", MatchAction::Ban(13)).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&http.last_body().unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "team": 13 }));
+        let open: MatchView = serde_json::from_str(r#"{"id":"m1","ban_enabled":true,"your_ban":13,"bans":null}"#).unwrap();
+        assert_eq!((open.ban_enabled, open.your_ban, open.bans.clone()), (true, Some(13), None));
+        let done: MatchView = serde_json::from_str(r#"{"id":"m1","ban_enabled":true,"bans":[13,25]}"#).unwrap();
+        assert_eq!(done.bans, Some(vec![13, 25]));
+        let old: MatchView = serde_json::from_str(r#"{"id":"m1"}"#).unwrap();
+        assert_eq!((old.ban_enabled, old.bans), (false, None), "an older server has no bans");
     }
 
     #[test]

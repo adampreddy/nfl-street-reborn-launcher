@@ -74,6 +74,19 @@ const STATES = {
   relay_failed: { ...base, relay_error: 'This Dolphin build does not support launcher Netplay.', snapshot: { ...empty, match: { id: 'm4', mode: 'casual', status: 'pairing', relay_state: 'go',
     relay_deadline: null, best_of: 1, you_host: true, opponent: 'Jock', field: 'The Pit', your_field_pick: 'the_pit', your_accepted: true, your_ready: true,
     series: [0, 0], wins_needed: 1, winner_seat: null, hold_reason: null, seat: 0 } } },
+  // Ranked team bans (backend 041): the ban step open, this seat's pick made (still blind), and the step over.
+  ban_open: { ...base, snapshot: { ...empty, match: { id: 'mb1', mode: 'ranked', status: 'lobby', relay_state: 'field',
+    relay_deadline: new Date(Date.now() + 600_000).toISOString(), best_of: 3, you_host: true, opponent: 'Jock', field: null, your_field_pick: null,
+    your_accepted: true, your_ready: false, series: [0, 0], wins_needed: 2, winner_seat: null, hold_reason: null, seat: 0,
+    ban_enabled: true, your_ban: null, bans: null } } },
+  ban_picked: { ...base, snapshot: { ...empty, match: { id: 'mb2', mode: 'ranked', status: 'lobby', relay_state: 'field',
+    relay_deadline: new Date(Date.now() + 600_000).toISOString(), best_of: 3, you_host: true, opponent: 'Jock', field: null, your_field_pick: null,
+    your_accepted: true, your_ready: false, series: [0, 0], wins_needed: 2, winner_seat: null, hold_reason: null, seat: 0,
+    ban_enabled: true, your_ban: 25, bans: null } } },
+  ban_done: { ...base, snapshot: { ...empty, match: { id: 'mb3', mode: 'ranked', status: 'lobby', relay_state: 'ready',
+    relay_deadline: null, best_of: 3, you_host: true, opponent: 'Jock', field: null, your_field_pick: null,
+    your_accepted: true, your_ready: true, series: [0, 0], wins_needed: 2, winner_seat: null, hold_reason: null, seat: 0,
+    ban_enabled: true, your_ban: 25, bans: [13, 25] } } },
   held: { ...base, snapshot: { ...empty, match: { id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', relay_deadline: null,
     best_of: 3, you_host: true, opponent: 'Jock', field: 'The Pit', your_field_pick: 'the_pit', your_accepted: true, your_ready: true,
     series: [1, 1], wins_needed: 2, winner_seat: null, hold_reason: 'series-too-fast', seat: 0 } } },
@@ -115,6 +128,10 @@ const EXPECT = {
   running_bo3: { text: ['Jock', 'In play', 'Ranked · first to two wins', 'Game 2 · Series 1-0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
   held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
+  ban_open: { text: ['Ban a team', 'to ban', '49ers', 'Ravens', 'Vikings'], buttons: ['Leave match'], counts: { '.on-ban-team': 32, '.on-ban-team.on': 0 },
+    absent: ['Banned:', 'Accept', 'to accept'] },
+  ban_picked: { text: ['Ban a team'], counts: { '.on-ban-team': 32, '.on-ban-team.on': 1, '.on-ban-team.on[data-key="ban-25"]': 1 }, absent: ['Banned:'] },
+  ban_done: { text: ['Banned: Eagles, Ravens', 'Getting ready'], buttons: ['Leave match'], counts: { '.on-ban-team': 0 }, absent: ['Ban a team'] },
 };
 
 const types = { '.svg': 'image/svg+xml', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
@@ -178,6 +195,15 @@ try {
     }
     if (errors.length) problems.push(`page errors: ${errors.join(' | ')}`);
 
+    // A tap on a team is the ban: it sends mm_match_action(ban, TGID) and nothing else.
+    if (name === 'ban_open') {
+      await page.evaluate(() => { window.__args = []; const inv = window.__TAURI__.core.invoke; window.__TAURI__.core.invoke = async (cmd, args) => { window.__args.push([cmd, args]); return inv(cmd, args); }; });
+      await page.locator('[data-key="ban-25"]').click({ timeout: 3000 }).catch((e) => problems.push(`could not tap the Ravens: ${e.message}`));
+      await page.waitForTimeout(300);
+      const sent = await page.evaluate(() => window.__args.filter(([c]) => c === 'mm_match_action').map(([, a]) => a));
+      if (!sent.some((a) => a?.action === 'ban' && a?.value === 25 && a?.matchId === 'mb1')) problems.push(`tapping the Ravens sent ${JSON.stringify(sent)}`);
+    }
+
     // The queue timer must COUNT between server updates (it froze once: the stub never changes, and
     // neither does a real snapshot for up to 25 s of long poll).
     if (name === 'queued') {
@@ -189,7 +215,7 @@ try {
 
     // The private-room section must be hidden exactly while matchmaking has the player busy, and
     // visible otherwise - including while a match is HELD, because a held match's seats are released.
-    const busy = ['queued', 'lobby', 'lobby_league', 'lobby_league_raw', 'lobby_retail', 'lobby_nick', 'pairing_nick', 'lobby_three', 'lobby_four', 'match_four', 'pairing', 'running_bo3', 'relay_failed'].includes(name);
+    const busy = ['queued', 'lobby', 'lobby_league', 'lobby_league_raw', 'lobby_retail', 'lobby_nick', 'pairing_nick', 'lobby_three', 'lobby_four', 'match_four', 'pairing', 'running_bo3', 'relay_failed', 'ban_open', 'ban_picked', 'ban_done'].includes(name);
     const shown = await page.evaluate(() => getComputedStyle(document.getElementById('screen')).display !== 'none');
     if (busy && shown) problems.push('the private-room section is still offered while matchmaking has the player busy');
     if (!busy && !shown) problems.push('the private-room section is hidden when the player is free to use it');
