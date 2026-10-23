@@ -867,7 +867,7 @@ pub fn current_match_league() -> Option<u64> {
     m.league.as_ref()?.get("fixture_id")?.as_u64()
 }
 
-/// The running ranked match's team bans, once the ban step is over: the list the ranked seed is derived from
+/// The running ranked match's team bans (possibly none), once the ban step is over: the list the ranked seed is derived from
 /// (`dolphin_settings::netplay_boot_state`). `None` for every other match, and while the step is still open. The same
 /// filters as [`current_match_id`].
 pub fn current_match_bans() -> Option<Vec<u16>> {
@@ -876,8 +876,9 @@ pub fn current_match_bans() -> Option<Vec<u16>> {
     if matches!(m.relay_state.as_str(), "complete" | "void" | "abandoned" | "held") || m.extra_player() || !m.ban_enabled {
         return None;
     }
-    let bans = reborn_core::ban_seed::normalize(m.bans.as_deref()?);
-    (!bans.is_empty()).then_some(bans)
+    // An empty list is still Some: a ban match with no bans boots the ranked-rules seed (Xzibit, Legends and the
+    // division teams hidden), which the other ban-capable launcher derives too.
+    Some(reborn_core::ban_seed::normalize(m.bans.as_deref()?))
 }
 
 /// Can this launcher take part in a ranked ban step? Its installed ranked seed must be one `ban_seed` has located.

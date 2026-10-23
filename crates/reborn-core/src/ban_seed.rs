@@ -33,11 +33,25 @@ const REC_LEN: usize = 68;
 const TGID: (usize, usize) = (452, 10);
 const TTYP: (usize, usize) = (517, 5);
 const TTYP_NFL: u32 = 0;
+const TTYP_SPECIAL: u32 = 3;
 const TTYP_HIDDEN: u32 = 2;
 
 /// The TGIDs a player may ban: the 32 NFL teams (the backend's bans.js BANNABLE).
 pub fn is_bannable(tgid: u16) -> bool {
     (1..=32).contains(&tgid)
+}
+
+/// Never in a ranked game (Adam 2026-10-23): Team Xzibit (33), NFL Legends (34) and the eight division all-star
+/// teams (36-43), the disc's TTYP 3 rows. Hidden from every ranked game that has the ban step, banned or not, so ranked
+/// team select is the 32 NFL teams minus the bans (measured: both side lists 30 long with two bans).
+pub const RANKED_HIDDEN: &[u16] = &[33, 34, 36, 37, 38, 39, 40, 41, 42, 43];
+
+/// Every team a ranked ban seed hides: the special teams and the bans, sorted, no repeats.
+pub fn hidden_for(bans: &[u16]) -> Vec<u16> {
+    let mut v: Vec<u16> = normalize(bans).into_iter().chain(RANKED_HIDDEN.iter().copied()).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
 }
 
 /// One seed file whose TEAM tables have been located.
@@ -76,11 +90,16 @@ pub fn normalize(bans: &[u16]) -> Vec<u16> {
     v
 }
 
-/// `state` with `bans` removed from team select. `bans` must be normalized and non-empty.
-pub fn derive(state: &[u8], layout: &Layout, bans: &[u16]) -> Result<Vec<u8>, String> {
-    if bans.is_empty() || normalize(bans) != bans {
-        return Err("ban list must be non-empty, sorted and bannable".into());
+/// `state` with every team in `hide` removed from team select. `hide` is [`hidden_for`]'s list: sorted, no repeats,
+/// non-empty, and every team in it must currently be listed (TTYP 0 or 3).
+pub fn derive(state: &[u8], layout: &Layout, hide: &[u16]) -> Result<Vec<u8>, String> {
+    let mut sorted = hide.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if hide.is_empty() || sorted != hide {
+        return Err("the hide list must be non-empty, sorted and without repeats".into());
     }
+    let bans = hide;
     if state.len() < HEADER || u32::from_le_bytes(state[8..12].try_into().unwrap()) == 0 {
         return Err("the seed is not a compressed save state".into());
     }
@@ -124,8 +143,9 @@ pub fn derive(state: &[u8], layout: &Layout, bans: &[u16]) -> Result<Vec<u8>, St
         if view.bits(rec, TGID)? != u32::from(tgid) {
             return Err(format!("the TEAM row for TGID {tgid} at {rec:#x} is another team: this is not the seed the layout was made from"));
         }
-        if view.bits(rec, TTYP)? != TTYP_NFL {
-            return Err(format!("TGID {tgid} at {rec:#x} is not an NFL team row"));
+        let ttyp = view.bits(rec, TTYP)?;
+        if ttyp != TTYP_NFL && ttyp != TTYP_SPECIAL {
+            return Err(format!("TGID {tgid} at {rec:#x} is not a listed team (TTYP {ttyp})"));
         }
         view.set_bits(rec, TTYP, TTYP_HIDDEN)?;
     }
@@ -148,13 +168,15 @@ pub fn derive(state: &[u8], layout: &Layout, bans: &[u16]) -> Result<Vec<u8>, St
     Ok(out)
 }
 
-/// Where a derived seed lives: one file per (seed, ban list), so a second game of the series reuses it.
+/// Where a derived seed lives: one file per (seed, rules, ban list), so a second game of the series reuses it. `r1` =
+/// ranked rules 1 (the special teams hidden); bump it if [`RANKED_HIDDEN`] changes.
 pub fn derived_path(dir: &Path, seed_sha256: &str, bans: &[u16]) -> PathBuf {
     let list: Vec<String> = bans.iter().map(u16::to_string).collect();
-    dir.join(format!("ranked-{}-ban-{}.s01", &seed_sha256[..seed_sha256.len().min(12)], list.join("-")))
+    let tail = if list.is_empty() { "nobans".to_string() } else { format!("ban-{}", list.join("-")) };
+    dir.join(format!("ranked-{}-r1-{tail}.s01", &seed_sha256[..seed_sha256.len().min(12)]))
 }
 
-/// Derive the ban seed for `seed` into `dir`. Always derived again from the source (a stale or damaged file on disk
+/// Derive the ranked seed for `seed` into `dir`: the special teams and `bans` (may be empty) hidden. Always derived again from the source (a stale or damaged file on disk
 /// must never be what this PC boots); a file already holding exactly those bytes is kept rather than rewritten, because
 /// Dolphin may have it open (the second game of a series) and Windows refuses to replace an open file. Otherwise
 /// written to a temporary name, then renamed.
@@ -163,7 +185,7 @@ pub fn ensure(seed: &Path, dir: &Path, bans: &[u16]) -> Result<PathBuf, String> 
     let state = std::fs::read(seed).map_err(|e| format!("could not read {}: {e}", seed.display()))?;
     let sha = sha256_hex(&state);
     let layout = layout_for(&sha).ok_or("this ranked seed cannot ban teams (unknown seed)")?;
-    let derived = derive(&state, layout, &bans)?;
+    let derived = derive(&state, layout, &hidden_for(&bans))?;
     std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let path = derived_path(dir, &sha, &bans);
     if std::fs::read(&path).map(|have| have == derived).unwrap_or(false) {
@@ -397,7 +419,8 @@ mod tests {
                 }
             };
             put(&mut plain, TGID, u32::from(*tgid));
-            put(&mut plain, TTYP, if *tgid <= 32 { 0 } else { 3 });
+            // The disc's values: NFL 0, specials 3, draft teams 2, Tutorial 17.
+            put(&mut plain, TTYP, match *tgid { 1..=32 => 0, 46..=53 => 2, 54 => 17, _ => 3 });
         }
         let mut state = vec![0u8; HEADER];
         state[..6].copy_from_slice(b"GN7E69");
@@ -435,20 +458,25 @@ mod tests {
     fn a_ban_hides_exactly_the_banned_rows_and_nothing_else() {
         let (state, layout) = fake_state();
         let before = decode_all(&state);
-        let out = derive(&state, &layout, &[13, 25]).unwrap();
+        let hide = hidden_for(&[25, 13]);
+        assert_eq!(hide, vec![13, 25, 33, 34, 36, 37, 38, 39, 40, 41, 42, 43]);
+        let out = derive(&state, &layout, &hide).unwrap();
         let after = decode_all(&out);
         assert_eq!(before.len(), after.len());
         let diff: Vec<usize> = (0..before.len()).filter(|&i| before[i] != after[i]).collect();
-        assert_eq!(diff.len(), 2, "one byte per banned row: {diff:x?}");
+        assert_eq!(diff.len(), 12, "one byte per hidden row: {diff:x?}");
         let mut plain = BTreeMap::new();
         for (k, c) in after.chunks(CHUNK).enumerate() { plain.insert(k, c.to_vec()); }
         let mut v = ChunkView { chunks: &mut plain };
         for (row, tgid) in RETAIL_ROWS.iter().enumerate() {
             let rec = layout.tables[0] + row * REC_LEN;
-            let want = if *tgid == 13 || *tgid == 25 { TTYP_HIDDEN } else if *tgid <= 32 { 0 } else { 3 };
+            let want = if hide.contains(tgid) { TTYP_HIDDEN } else { match *tgid { 1..=32 => 0, 46..=53 => 2, 54 => 17, _ => 3 } };
             assert_eq!(v.bits(rec, TTYP).unwrap(), want, "TGID {tgid}");
         }
-        assert_eq!(derive(&state, &layout, &[13, 25]).unwrap(), out, "the same inputs give the same bytes");
+        assert_eq!(derive(&state, &layout, &hide).unwrap(), out, "the same inputs give the same bytes");
+        // No bans at all still hides the special teams: ranked rules, not a ban.
+        assert_eq!(hidden_for(&[]), RANKED_HIDDEN.to_vec());
+        assert!(derive(&state, &layout, &hidden_for(&[])).is_ok());
     }
 
     #[test]
@@ -456,7 +484,8 @@ mod tests {
         let (state, layout) = fake_state();
         assert!(derive(&state, &layout, &[]).is_err());
         assert!(derive(&state, &layout, &[25, 13]).is_err(), "unsorted");
-        assert!(derive(&state, &layout, &[33]).is_err(), "Team Xzibit is not bannable");
+        assert!(derive(&state, &layout, &[46]).is_err(), "a draft team is not listed, so not hideable");
+        assert_eq!(hidden_for(&[33, 7]), [&[7u16][..], RANKED_HIDDEN].concat(), "Xzibit is hidden by rule, never banned");
         let wrong = Layout { seed_sha256: "x", tables: &[1000], rows: RETAIL_ROWS };
         assert!(derive(&state, &wrong, &[13]).is_err(), "a layout that does not match the seed patches nothing");
         assert_eq!(normalize(&[25, 13, 13, 0, 40]), vec![13, 25]);
@@ -480,7 +509,9 @@ mod tests {
         if sha != LAYOUTS[0].seed_sha256 {
             return; // another seed is installed: the layout test above covers the mechanics
         }
-        let out = derive(&bytes, layout_for(&sha).unwrap(), &[13, 25]).unwrap();
-        assert_eq!(sha256_hex(&out), "65c56d819313dcd5f609e84617e43b20823958f9ae1ff6dc8eb2fd0d455dc98f");
+        // Eagles + Ravens banned and the special teams hidden: boot-tested 2026-10-23, both lists 30 teams, last Vikings.
+        let out = derive(&bytes, layout_for(&sha).unwrap(), &hidden_for(&[13, 25])).unwrap();
+        assert_eq!(sha256_hex(&out), "be9cd159d2b143479f1a183b3283ee20b6a23c5da06cce1e74ea19ffc8d65e21");
+        eprintln!("the installed ranked seed derived to the boot-tested bytes");
     }
 }
