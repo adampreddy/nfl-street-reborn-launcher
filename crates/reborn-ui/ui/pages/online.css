@@ -203,6 +203,9 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-ban-list.locked .on-ban-row:not(.on){opacity:.5}
 .on-ban-list.locked .on-ban-row:not(.on):is(:hover,:focus-visible,.pad-focus){opacity:1}
 .on-ban-row.on{background:var(--red-wash);border-color:var(--red)}
+.on-ban-row.none.on{background:var(--glass-3);border-color:var(--stroke-hi)}
+.on-ban-row.none.on .on-ban-tag{color:var(--fg-2);transform:none}
+.on-ban-none{justify-self:center;width:20px;height:20px;box-sizing:border-box;border-radius:50%;border:2px dashed var(--fg-3)}
 .on-ban-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .on-ban-tag{font:700 11px/1 Inter,system-ui,sans-serif;letter-spacing:.07em;text-transform:uppercase;color:var(--red-ink);padding:4px 8px;border-radius:var(--r-sm);border:1px solid currentColor;transform:rotate(-4deg)}
 .on-ban-row .team-logo.on-ban-logo{width:32px;height:32px;flex:none;font-size:12px;object-fit:contain}

@@ -590,8 +590,8 @@ function crewLine(m) {
   return el('span', { class: 'on-crew', text: `${party.length} players · with ${others.join(', ')}` });
 }
 
-// Ranked team bans, a game-menu list (Adam 10-23, mockup "Game menu list"): the D-pad walks the 32 teams and A bans the
-// one under focus; a click does the same, and picking another changes it, until both have picked or the 20 s run out.
+// Ranked team bans, a game-menu list (Adam 10-23, mockup "Game menu list"): the D-pad walks "No ban" and the 32 teams
+// and A picks the one under focus; a click does the same, and picking another changes it, until both have picked or the 20 s run out.
 // The opponent's ban stays hidden until then (only THAT they picked shows); a team nobody banned stays in team select.
 // banSeen remembers, per match, what this page already animated: the list slides in once, a ban stamps once, the
 // reveal flips once, though the card is rebuilt on every change the server reports.
@@ -617,26 +617,30 @@ function banPicker(m) {
   banSeen.ban = m.your_ban ?? null;
   const teams = banTeams(m, banSeen.logos);
   const mine = teams.find((t) => t.id === m.your_ban) ?? null;
+  // 0 = "No ban" (Adam 10-24: nobody has to ban); it counts as your pick, so the step can end early.
+  const none = m.your_ban === 0;
+  const picked = !!mine || none;
   const opp = m.opponent || 'Opponent';
   const clockEl = el('span', { class: 'on-ban-clock num', 'data-ban-clock': m.relay_deadline, 'aria-label': 'Time left to ban' });
   banTick(clockEl);
   const side = el('div', { class: 'on-ban-side' },
-    el('h3', { class: `on-ban-title${stamp ? ' swap' : ''}`, text: mine ? `${mine.name} banned` : 'Ban a team' }),
-    el('p', { class: 'on-ban-why', text: mine ? 'Pick another team to change it.' : "Nobody can play the team you ban. It stays hidden until you've both picked." }),
+    el('h3', { class: `on-ban-title${stamp ? ' swap' : ''}`, text: mine ? `${mine.name} banned` : none ? 'No ban' : 'Ban a team' }),
+    el('p', { class: 'on-ban-why', text: mine ? 'Pick another team to change it.' : none ? 'Pick a team if you change your mind.'
+      : "Nobody can play the team you ban, and it stays hidden until you've both picked. Banning is optional." }),
     clockEl,
     el('span', { class: `on-st on-ban-them${m.opponent_banned ? ' in' : ''}` }, el('i', { 'aria-hidden': 'true' }),
       m.opponent_banned ? `${opp} has picked` : `${opp} is picking…`));
-  const list = el('div', { class: `on-ban-list${mine ? ' locked' : ''}`, role: 'group', 'aria-label': 'Ban a team' });
-  teams.forEach((t, i) => {
+  const list = el('div', { class: `on-ban-list${picked ? ' locked' : ''}`, role: 'group', 'aria-label': 'Ban a team' });
+  [{ id: 0, name: 'No ban', none: true }, ...teams].forEach((t, i) => {
     const on = t.id === m.your_ban;
     list.append(el('button', {
       // The id keeps the pad's focus on this row through a redraw (app-shell matches focus by id, then by text).
-      type: 'button', id: `ban-team-${t.id}`, class: `on-ban-row${on ? ' on' : ''}${on && stamp ? ' stamp' : ''}`,
+      type: 'button', id: `ban-team-${t.id}`, class: `on-ban-row${t.none ? ' none' : ''}${on ? ' on' : ''}${on && stamp && !t.none ? ' stamp' : ''}`,
       style: `--i:${i}`, 'aria-pressed': on ? 'true' : 'false', 'data-key': `ban-${t.id}`,
-      'data-primary': (mine ? on : i === 0) ? 'true' : null,
+      'data-primary': (picked ? on : i === 0) ? 'true' : null,
       onclick: () => { if (!on) act('mm_match_action', { matchId: m.id, action: 'ban', value: t.id }); },
-    }, teamLogo(t, 'on-ban-logo'), el('span', { class: 'on-ban-name', text: t.name }),
-    on ? el('span', { class: 'on-ban-tag', text: 'Banned' }) : null));
+    }, t.none ? el('span', { class: 'on-ban-none', 'aria-hidden': 'true' }) : teamLogo(t, 'on-ban-logo'), el('span', { class: 'on-ban-name', text: t.name }),
+    on ? el('span', { class: 'on-ban-tag', text: t.none ? 'Your pick' : 'Banned' }) : null));
   });
   list.addEventListener('scroll', () => { banSeen.scroll = list.scrollTop; }, { passive: true });
   // Put the list back where it was before app-shell restores focus (its own microtask, queued after this one).

@@ -964,7 +964,7 @@ fn snapshot_json(s: &Snapshot, chat: &[ChatMessage]) -> serde_json::Value {
 fn match_json(m: &MatchView) -> serde_json::Value {
     use reborn_core::matchmaking::{discord_aside, shown_name};
     let id = |v: &str| Some(v.trim().to_string()).filter(|v| !v.is_empty());
-    serde_json::json!({
+    let mut v = serde_json::json!({
         "id": m.id, "mode": m.mode, "status": m.status, "relay_state": m.relay_state,
         "relay_deadline": m.relay_deadline, "best_of": m.best_of, "you_host": m.you_host,
         "opponent": shown_name(m.opponent.nickname.as_deref(), &m.opponent.display_name),
@@ -991,7 +991,11 @@ fn match_json(m: &MatchView) -> serde_json::Value {
             "name": Some(shown_name(p.nickname.as_deref(), p.display_name.as_deref().unwrap_or(""))).filter(|n| !n.is_empty()),
             "discord": discord_aside(p.nickname.as_deref(), p.display_name.as_deref().unwrap_or("")),
         })).collect::<Vec<_>>(),
-    })
+    });
+    // The ban list's extras go in here: the macro above is at its recursion limit.
+    v["opponent_banned"] = serde_json::json!(m.opponent_banned);
+    v["ban_teams"] = m.ban_teams.clone().unwrap_or(serde_json::Value::Null);
+    v
 }
 
 /// `seed_kind`: casual's Quick game (`regular`) or Pickup. Ranked ignores it (`Client::enqueue` never sends one).
@@ -1079,7 +1083,8 @@ pub async fn mm_match_action(match_id: String, action: String, value: Option<ser
             "leave" => MatchAction::Leave,
             "chat" => MatchAction::Chat(value.as_ref().and_then(|v| v.as_str()).unwrap_or_default().to_string()),
             "rematch" => MatchAction::Rematch,
-            "ban" => match value.as_ref().and_then(|v| v.as_u64()).and_then(|v| u16::try_from(v).ok()).filter(|t| reborn_core::ban_seed::is_bannable(*t)) {
+            "ban" => match value.as_ref().and_then(|v| v.as_u64()).and_then(|v| u16::try_from(v).ok()).filter(|t| *t == 0 || reborn_core::ban_seed::is_bannable(*t)) {
+                // 0 = "No ban": the player chose not to ban, which counts as their pick.
                 Some(team) => MatchAction::Ban(team),
                 None => return Err("That isn't a team you can ban.".to_string()),
             },

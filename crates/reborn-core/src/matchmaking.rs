@@ -222,8 +222,12 @@ pub struct MatchView {
     /// Ranked team bans (backend migration 041): this match walks `field` as a blind ban step. False from an older
     /// server, and on every match whose two launchers did not both say `can_ban`.
     pub ban_enabled: bool,
-    /// This seat's ban while the step is open (TGID 1..32), or none.
+    /// This seat's ban while the step is open (TGID 1..32; 0 = picked "No ban"), or none (not picked yet).
     pub your_ban: Option<u16>,
+    /// While the step is open: whether the other seat has picked (never which team). None from an older server.
+    pub opponent_banned: Option<bool>,
+    /// The 32 teams with their live-assets logos while the ban list or its reveal shows; passed to the page as is.
+    pub ban_teams: Option<serde_json::Value>,
     /// Both seats' bans, sorted and unique, once the step is over; what the ban seed is derived from. `None` while the
     /// step is open and on a match without bans.
     pub bans: Option<Vec<u16>>,
@@ -272,6 +276,8 @@ impl Default for MatchView {
             rematch_available: offered(),
             ban_enabled: false,
             your_ban: None,
+            opponent_banned: None,
+            ban_teams: None,
             bans: None,
         }
     }
@@ -1235,6 +1241,10 @@ mod tests {
         assert_eq!(body, serde_json::json!({ "team": 13 }));
         let open: MatchView = serde_json::from_str(r#"{"id":"m1","ban_enabled":true,"your_ban":13,"bans":null}"#).unwrap();
         assert_eq!((open.ban_enabled, open.your_ban, open.bans.clone()), (true, Some(13), None));
+        let later: MatchView = serde_json::from_str(r#"{"id":"m1","ban_enabled":true,"your_ban":0,"opponent_banned":true,"ban_teams":[{"tgid":25,"logo_url":"/x.png"}]}"#).unwrap();
+        assert_eq!((later.your_ban, later.opponent_banned), (Some(0), Some(true)), "0 = No ban");
+        assert_eq!(later.ban_teams.as_ref().and_then(|v| v.as_array()).map(|a| a.len()), Some(1));
+        assert_eq!(open.opponent_banned, None, "absent from an older server");
         let done: MatchView = serde_json::from_str(r#"{"id":"m1","ban_enabled":true,"bans":[13,25]}"#).unwrap();
         assert_eq!(done.bans, Some(vec![13, 25]));
         let old: MatchView = serde_json::from_str(r#"{"id":"m1"}"#).unwrap();
