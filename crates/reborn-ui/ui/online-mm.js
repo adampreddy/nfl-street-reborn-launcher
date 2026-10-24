@@ -592,7 +592,7 @@ function crewLine(m) {
 
 // Ranked team bans, a game-menu list (Adam 10-23, mockup "Game menu list"): the D-pad walks the 32 teams and A bans the
 // one under focus; a click does the same, and picking another changes it, until both have picked or the 20 s run out.
-// The opponent's ban stays hidden until then (only THAT they locked in shows); a team nobody banned stays in team select.
+// The opponent's ban stays hidden until then (only THAT they picked shows); a team nobody banned stays in team select.
 // banSeen remembers, per match, what this page already animated: the list slides in once, a ban stamps once, the
 // reveal flips once, though the card is rebuilt on every change the server reports.
 const banSeen = { id: null, ban: null, revealed: null, scroll: 0, logos: new Map() };
@@ -621,12 +621,11 @@ function banPicker(m) {
   const clockEl = el('span', { class: 'on-ban-clock num', 'data-ban-clock': m.relay_deadline, 'aria-label': 'Time left to ban' });
   banTick(clockEl);
   const side = el('div', { class: 'on-ban-side' },
-    el('span', { class: 'k-label', text: 'Ranked · team ban' }),
     el('h3', { class: `on-ban-title${stamp ? ' swap' : ''}`, text: mine ? `${mine.name} banned` : 'Ban a team' }),
-    el('p', { class: 'on-ban-why', text: mine ? 'Pick another team to change it.' : `Neither of you can play it. ${opp} won't see your pick until you both lock in.` }),
+    el('p', { class: 'on-ban-why', text: mine ? 'Pick another team to change it.' : "Nobody can play the team you ban. It stays hidden until you've both picked." }),
     clockEl,
     el('span', { class: `on-st on-ban-them${m.opponent_banned ? ' in' : ''}` }, el('i', { 'aria-hidden': 'true' }),
-      m.opponent_banned ? `${opp} locked in` : `${opp} is picking…`));
+      m.opponent_banned ? `${opp} has picked` : `${opp} is picking…`));
   const list = el('div', { class: `on-ban-list${mine ? ' locked' : ''}`, role: 'group', 'aria-label': 'Ban a team' });
   teams.forEach((t, i) => {
     const on = t.id === m.your_ban;
