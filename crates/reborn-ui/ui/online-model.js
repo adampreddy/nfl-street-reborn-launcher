@@ -166,16 +166,26 @@ export function boardStanding(answer) {
 
 // ---- Ranked team bans (backend migration 041) ----
 
-/** The 32 bannable teams (the server's TGIDs 1..32), A to Z by nickname, with the backend's logo for each. */
+/** The 32 bannable teams (the server's TGIDs 1..32), A to Z by nickname. Logos come from the match (banTeams). */
 export const BAN_TEAMS = [
   [15, '49ers'], [1, 'Bears'], [2, 'Bengals'], [3, 'Bills'], [4, 'Broncos'], [5, 'Browns'], [6, 'Buccaneers'],
   [7, 'Cardinals'], [8, 'Chargers'], [9, 'Chiefs'], [10, 'Colts'], [26, 'Commanders'], [11, 'Cowboys'], [12, 'Dolphins'],
   [13, 'Eagles'], [14, 'Falcons'], [16, 'Giants'], [17, 'Jaguars'], [18, 'Jets'], [19, 'Lions'], [20, 'Packers'],
   [21, 'Panthers'], [22, 'Patriots'], [23, 'Raiders'], [24, 'Rams'], [25, 'Ravens'], [27, 'Saints'], [28, 'Seahawks'],
   [29, 'Steelers'], [32, 'Texans'], [30, 'Titans'], [31, 'Vikings'],
-].map(([id, name]) => ({ id, name, logo_url: `/live-assets/teams/${id}-128.png` }));
+].map(([id, name]) => ({ id, name, logo_url: null }));
 
 const BAN_NAME = new Map(BAN_TEAMS.map((t) => [t.id, t.name]));
+
+/** BAN_TEAMS with the live-assets logo the match sent (`ban_teams`, backend c697e38) for each. `cache` keeps the logos
+ *  once the match stops sending them; a team with none draws its letter. */
+export function banTeams(m, cache = new Map()) {
+  for (const t of Array.isArray(m?.ban_teams) ? m.ban_teams : []) {
+    const id = Number(t?.tgid);
+    if (BAN_NAME.has(id) && typeof t.logo_url === 'string' && t.logo_url) cache.set(id, t.logo_url);
+  }
+  return BAN_TEAMS.map((t) => ({ ...t, logo_url: cache.get(t.id) ?? null }));
+}
 
 /** The ban step is open on this match: show the picker. */
 export function banStepOpen(m) {

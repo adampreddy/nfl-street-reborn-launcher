@@ -354,6 +354,8 @@ function back() {
 }
 function pageStep(delta) {
   if (selectEdit) endSelect(false);
+  // A page may use the bumpers itself (Online's ban list: a page of teams) by calling preventDefault() on this event.
+  if (!document.dispatchEvent(new CustomEvent('pad-page', { cancelable: true, detail: delta }))) return;
   // First run has saved, ordered steps; bumpers must not bypass its Next action.
   if (document.body.classList.contains('page-setup')||document.querySelector('dialog[open]')) return;
   // Unsaved changes are never dropped by a bumper: LB/RB do nothing while the save bar is open.

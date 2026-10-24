@@ -8,7 +8,7 @@
 import { bridge, call, el, get, quietCall, reason } from './shell.js';
 import { seriesOverModel, drawSeriesOver } from './series-over.js';
 import { avatar, teamLogo } from './match-rows.js';
-import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLine, inviteLink, modeLine, seekLine, seriesLine, standing, BAN_TEAMS, banStepOpen, banWithin, banLine } from './online-model.js';
+import { acceptWithin, clock, eloBits, everyoneReady, heldNotice, inviteLine, inviteLink, modeLine, seekLine, seriesLine, standing, banTeams, banStepOpen, banLine } from './online-model.js';
 import { openPanel } from './menu.js';
 import { tabs } from './tabs.js';
 import { createSignIn } from './sign-in.js';
@@ -506,12 +506,8 @@ setInterval(() => {
     accept.hidden = !left;
     if (left) accept.textContent = left;
   }
-  const ban = section.querySelector('.on-tm[data-ban-deadline]');
-  if (ban) {
-    const left = banWithin(ban.dataset.banDeadline, Date.now());
-    ban.hidden = !left;
-    if (left) ban.textContent = left;
-  }
+  const ban = section.querySelector('[data-ban-clock]');
+  if (ban) banTick(ban);
 }, 1000);
 
 function drawQueued(t) {
@@ -594,23 +590,90 @@ function crewLine(m) {
   return el('span', { class: 'on-crew', text: `${party.length} players · with ${others.join(', ')}` });
 }
 
-// Ranked team bans: one tap bans a team (tap another to change it) until both have picked or the 20 s run out. Your
-// opponent's ban is hidden until then; a team nobody banned stays in team select.
+// Ranked team bans, a game-menu list (Adam 10-23, mockup "Game menu list"): the D-pad walks the 32 teams and A bans the
+// one under focus; a click does the same, and picking another changes it, until both have picked or the 20 s run out.
+// The opponent's ban stays hidden until then (only THAT they locked in shows); a team nobody banned stays in team select.
+// banSeen remembers, per match, what this page already animated: the list slides in once, a ban stamps once, the
+// reveal flips once, though the card is rebuilt on every change the server reports.
+const banSeen = { id: null, ban: null, revealed: null, scroll: 0, logos: new Map() };
+const BAN_ROWS_PER_PAGE = 7;
+
+function banSeat(m) {
+  if (banSeen.id === m.id) return;
+  Object.assign(banSeen, { id: m.id, ban: null, revealed: null, scroll: 0 });
+  banSeen.logos.clear();
+}
+
+function banTick(node) {
+  const ms = Date.parse(node.dataset.banClock) - Date.now();
+  node.textContent = clock(Number.isFinite(ms) ? ms : 0);
+  node.classList.toggle('late', Number.isFinite(ms) && ms > 0 && ms <= 5500);
+}
+
 function banPicker(m) {
-  const foot = el('div', { class: 'on-vs-foot on-ban' },
-    el('span', { class: 'k-label', text: 'Ban a team' }));
-  const grid = el('div', { class: 'on-ban-grid', role: 'group', 'aria-label': 'Ban a team' });
-  for (const t of BAN_TEAMS) {
-    const on = m.your_ban === t.id;
-    grid.append(el('button', {
-      type: 'button', class: `on-ban-team${on ? ' on' : ''}`, 'aria-pressed': on ? 'true' : 'false', 'data-key': `ban-${t.id}`,
-      onclick: () => act('mm_match_action', { matchId: m.id, action: 'ban', value: t.id }),
-    }, teamLogo(t, 'on-ban-logo'), el('span', { text: t.name })));
-  }
-  foot.append(grid);
-  const left = banWithin(m.relay_deadline, Date.now());
-  if (left) foot.append(el('span', { class: 'on-tm num', 'data-ban-deadline': m.relay_deadline, text: left }));
-  return foot;
+  const fresh = banSeen.id !== m.id;
+  banSeat(m);
+  const stamp = m.your_ban != null && m.your_ban !== banSeen.ban;
+  banSeen.ban = m.your_ban ?? null;
+  const teams = banTeams(m, banSeen.logos);
+  const mine = teams.find((t) => t.id === m.your_ban) ?? null;
+  const opp = m.opponent || 'Opponent';
+  const clockEl = el('span', { class: 'on-ban-clock num', 'data-ban-clock': m.relay_deadline, 'aria-label': 'Time left to ban' });
+  banTick(clockEl);
+  const side = el('div', { class: 'on-ban-side' },
+    el('span', { class: 'k-label', text: 'Ranked · team ban' }),
+    el('h3', { class: `on-ban-title${stamp ? ' swap' : ''}`, text: mine ? `${mine.name} banned` : 'Ban a team' }),
+    el('p', { class: 'on-ban-why', text: mine ? 'Pick another team to change it.' : `Neither of you can play it. ${opp} won't see your pick until you both lock in.` }),
+    clockEl,
+    el('span', { class: `on-st on-ban-them${m.opponent_banned ? ' in' : ''}` }, el('i', { 'aria-hidden': 'true' }),
+      m.opponent_banned ? `${opp} locked in` : `${opp} is picking…`));
+  const list = el('div', { class: `on-ban-list${mine ? ' locked' : ''}`, role: 'group', 'aria-label': 'Ban a team' });
+  teams.forEach((t, i) => {
+    const on = t.id === m.your_ban;
+    list.append(el('button', {
+      // The id keeps the pad's focus on this row through a redraw (app-shell matches focus by id, then by text).
+      type: 'button', id: `ban-team-${t.id}`, class: `on-ban-row${on ? ' on' : ''}${on && stamp ? ' stamp' : ''}`,
+      style: `--i:${i}`, 'aria-pressed': on ? 'true' : 'false', 'data-key': `ban-${t.id}`,
+      'data-primary': (mine ? on : i === 0) ? 'true' : null,
+      onclick: () => { if (!on) act('mm_match_action', { matchId: m.id, action: 'ban', value: t.id }); },
+    }, teamLogo(t, 'on-ban-logo'), el('span', { class: 'on-ban-name', text: t.name }),
+    on ? el('span', { class: 'on-ban-tag', text: 'Banned' }) : null));
+  });
+  list.addEventListener('scroll', () => { banSeen.scroll = list.scrollTop; }, { passive: true });
+  // Put the list back where it was before app-shell restores focus (its own microtask, queued after this one).
+  queueMicrotask(() => { if (list.isConnected) list.scrollTop = banSeen.scroll; else requestAnimationFrame(() => { list.scrollTop = banSeen.scroll; }); });
+  return el('div', { class: `on-vs-foot on-ban${fresh ? ' enter' : ''}` }, side, list);
+}
+
+// The list scrolls inside the card, so a row the pad moves onto is brought into view here (app-shell scrolls only the page).
+section.addEventListener('focusin', (e) => {
+  const row = e.target.closest?.('.on-ban-row');
+  const list = row?.parentElement;
+  if (!list) return;
+  const pad = 8, top = row.offsetTop, bottom = top + row.offsetHeight;
+  const to = top < list.scrollTop + pad ? top - pad : bottom > list.scrollTop + list.clientHeight - pad ? bottom - list.clientHeight + pad : null;
+  if (to !== null) list.scrollTo({ top: to, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+});
+// LB / RB: a page of teams up or down, instead of the launcher's next page, while the pad is in the list.
+document.addEventListener('pad-page', (e) => {
+  const row = document.activeElement?.closest?.('.on-ban-row');
+  if (!row) return;
+  e.preventDefault();
+  const rows = [...row.parentElement.querySelectorAll('.on-ban-row')];
+  rows[Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + e.detail * BAN_ROWS_PER_PAGE))]?.focus({ preventScroll: true });
+});
+
+// Both bans, once the step is over and before the game opens: each card flips in and is struck through, once.
+function banReveal(m) {
+  banSeat(m);
+  const anim = banSeen.revealed !== m.id;
+  banSeen.revealed = m.id;
+  const byId = new Map(banTeams(m, banSeen.logos).map((t) => [t.id, t]));
+  const picked = m.bans.map((id) => byId.get(id)).filter(Boolean);
+  return el('div', { class: `on-ban-reveal${anim ? ' enter' : ''}`, role: 'status', 'aria-label': banLine(m) },
+    el('span', { class: 'k-label', text: picked.length ? 'Banned this game' : 'No bans this game' }),
+    picked.length ? el('div', { class: 'on-ban-cards' }, ...picked.map((t, i) => el('span', { class: 'on-ban-card', style: `--i:${i}` },
+      teamLogo(t, 'on-ban-logo'), el('span', { text: t.name })))) : null);
 }
 
 // The matchup card (spec §3.3–§3.6). Only called for a match that is not over (complete, void, abandoned, held).
@@ -646,7 +709,7 @@ function drawMatch(m, chat, relayError, snap) {
     mid.append(el('span', { class: 'on-st' }, el('i', { 'aria-hidden': 'true' }), words), el('span', { class: 'on-tm', text: 'Your game opens on its own' }));
   }
   const bans = banLine(m);
-  if (bans) mid.append(el('span', { class: 'on-tm on-bans', text: bans }));
+  if (bans) mid.append(playing ? el('span', { class: 'on-tm on-bans', text: bans }) : banReveal(m));
   // The relay's own failure (the room would not open, the code would not send) in its own words.
   if (relayError) mid.append(el('p', { class: 'refusal', text: relayError }));
   const mine = eloBits(rankInfo?.elo);

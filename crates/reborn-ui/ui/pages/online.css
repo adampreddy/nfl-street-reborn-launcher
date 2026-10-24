@@ -176,19 +176,57 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
   .on-vs-match .avatar.on-av{width:88px;height:88px;font-size:36px}
   .on-vs-match .team-logo.on-plogo{width:40px;height:40px}
 }
-/* ranked team bans (online-mm.js banPicker): while the step is open the card stacks like the narrow layout (faces and
-   VS on one row, the card grows), and the 32 teams take a full-width row of their own under it, 8 by 4 */
+/* ranked team bans (online-mm.js banPicker), the game-menu list (Adam 10-23): while the step is open the card stacks
+   like the narrow layout (faces and VS on one row, the card grows), and under it the step takes a full-width row: what
+   to do and the clock on the left, the 32 teams as a scrolling list on the right */
 .on-vs:has(.on-ban){min-height:0}
-.on-vs-in.on-vs-match:has(.on-ban){position:relative;inset:auto;padding:52px 24px 22px;row-gap:14px}
+.on-vs-in.on-vs-match:has(.on-ban){position:relative;inset:auto;padding:52px 24px 22px;row-gap:16px}
 .on-vs-match:has(.on-ban)>.on-p,.on-vs-match:has(.on-ban)>.on-mid{grid-row:1}
-.on-vs-foot.on-ban{grid-row:2;grid-column:1/-1;width:100%;margin-top:0}
-.on-ban-grid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;width:100%}
-@media (max-width:1000px){.on-ban-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
-.on-ban-team{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:0;height:62px;padding:6px 4px;border-radius:8px;border:1px solid var(--stroke);background:var(--pill-bg);color:var(--fg);font:inherit;font-size:11px;cursor:pointer}
-.on-ban-team span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.on-ban-team:hover,.on-ban-team:focus-visible{border-color:var(--fg-3)}
-.on-ban-team.on{border-color:var(--red);background:color-mix(in srgb,var(--red) 18%,transparent)}
-.on-ban-team .team-logo.on-ban-logo{width:28px;height:28px;flex:none;font-size:11px}
+.on-vs-foot.on-ban{grid-row:2;grid-column:1/-1;width:100%;margin-top:0;display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:24px;align-items:stretch}
+@media (max-width:760px){.on-vs-foot.on-ban{grid-template-columns:minmax(0,1fr);gap:14px}}
+.on-ban-side{display:flex;flex-direction:column;align-items:flex-start;gap:10px;min-width:0;padding:4px 0}
+.on-ban-title{margin:0;font:700 26px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
+.on-ban-why{margin:0;font-size:13px;line-height:1.45;color:var(--fg-2);max-width:30ch}
+.on-ban-clock{margin-top:auto;font:700 64px/1 Inter,system-ui,sans-serif;letter-spacing:-.04em;font-variant-numeric:tabular-nums;color:var(--fg);transform-origin:left center}
+.on-ban-clock.late{color:var(--red-ink);animation:on-ban-pulse 1s ease-out infinite}
+.on-ban-them{margin-top:2px}
+.on-ban-them i{background:var(--fg-3);animation:on-ban-wait 1.2s ease-in-out infinite}
+.on-ban-them.in i{background:var(--ok);animation:none}
+.on-ban-list{position:relative;height:368px;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:4px;padding:4px;border-radius:12px;border:1px solid var(--stroke);background:var(--pill-bg);scrollbar-width:thin}
+.on-ban-row{position:relative;flex:none;display:grid;grid-template-columns:32px minmax(0,1fr) auto;align-items:center;gap:14px;height:44px;padding:0 14px;overflow:hidden;border-radius:8px;border:1px solid transparent;background:none;color:var(--fg);font:600 15px Inter,system-ui,sans-serif;text-align:left;cursor:pointer;transition:background var(--d1) ease,border-color var(--d1) ease,opacity var(--d1) ease}
+.on-ban-row>*{position:relative}
+.on-ban-row::before{content:'';position:absolute;inset:0;background:var(--red);transform:scaleX(0);transform-origin:left;opacity:0;pointer-events:none}
+.on-ban-row:hover,.on-ban-row:focus-visible,.on-ban-row.pad-focus{background:rgba(255,255,255,.08);border-color:var(--fg-3);outline:none}
+.on-ban-list.locked .on-ban-row:not(.on){opacity:.5}
+.on-ban-list.locked .on-ban-row:not(.on):is(:hover,:focus-visible,.pad-focus){opacity:1}
+.on-ban-row.on{background:color-mix(in srgb,var(--red) 16%,transparent);border-color:var(--red)}
+.on-ban-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.on-ban-tag{font:700 11px/1 Inter,system-ui,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--red-ink);padding:5px 8px;border-radius:6px;border:1.5px solid currentColor;transform:rotate(-4deg)}
+.on-ban-row .team-logo.on-ban-logo,.on-ban-card .team-logo.on-ban-logo{width:32px;height:32px;flex:none;font-size:12px;object-fit:contain}
+/* motion: the step slides in once (rows one after another), a ban sweeps red through its row and stamps BANNED,
+   the reveal flips each banned team in and strikes it through. theme.css turns all of it off for reduced motion. */
+.on-ban.enter .on-ban-side{animation:on-ban-rise var(--d2) cubic-bezier(.2,.8,.2,1) both}
+.on-ban.enter .on-ban-row{animation:on-ban-in var(--d2) cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(min(var(--i),10) * 28ms + 60ms)}
+.on-ban-row.stamp::before{animation:on-ban-sweep 560ms cubic-bezier(.3,.7,.2,1) both}
+.on-ban-row.stamp .on-ban-tag{animation:on-ban-stamp 420ms cubic-bezier(.3,1.4,.5,1) 180ms both}
+.on-ban-row.stamp .on-ban-logo{animation:on-ban-hit 360ms ease-out 180ms both}
+.on-ban-title.swap{animation:on-ban-rise var(--d1) ease-out both}
+.on-ban-reveal{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:8px}
+.on-ban-cards{display:flex;gap:12px;justify-content:center}
+.on-ban-card{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;width:96px;padding:12px 8px 10px;border-radius:12px;border:1px solid var(--red);background:color-mix(in srgb,var(--red) 14%,transparent);font:600 13px Inter,system-ui,sans-serif}
+.on-ban-card .team-logo.on-ban-logo{width:48px;height:48px;font-size:16px}
+.on-ban-card::after{content:'';position:absolute;left:10px;right:10px;top:42%;height:3px;border-radius:2px;background:var(--red);transform:rotate(-18deg)}
+.on-ban-reveal.enter .on-ban-card{animation:on-ban-flip 520ms cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i) * 220ms)}
+.on-ban-reveal.enter .on-ban-card::after{animation:on-ban-slash 260ms ease-out both;animation-delay:calc(var(--i) * 220ms + 420ms)}
+@keyframes on-ban-in{from{opacity:0;transform:translateX(22px)}}
+@keyframes on-ban-rise{from{opacity:0;transform:translateY(10px)}}
+@keyframes on-ban-sweep{0%{transform:scaleX(0);opacity:.6}55%{transform:scaleX(1);opacity:.6}100%{transform:scaleX(1);opacity:0}}
+@keyframes on-ban-stamp{0%{opacity:0;transform:scale(2.1) rotate(-12deg)}60%{opacity:1;transform:scale(.9) rotate(-3deg)}100%{opacity:1;transform:scale(1) rotate(-4deg)}}
+@keyframes on-ban-hit{0%,100%{transform:none}25%{transform:translateX(-3px) rotate(-6deg)}60%{transform:translateX(2px) rotate(3deg)}}
+@keyframes on-ban-pulse{0%{transform:scale(1.07)}40%,100%{transform:none}}
+@keyframes on-ban-wait{50%{opacity:.3}}
+@keyframes on-ban-flip{from{opacity:0;transform:perspective(500px) rotateY(80deg) scale(.9)}}
+@keyframes on-ban-slash{from{transform:rotate(-18deg) scaleX(0)}to{transform:rotate(-18deg) scaleX(1)}}
 .on-bans{margin-top:6px}
 .on-acts{margin-top:12px;display:flex;justify-content:center;gap:10px}
 .on-acts .btn{height:48px;min-width:140px}

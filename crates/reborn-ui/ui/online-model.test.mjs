@@ -163,10 +163,16 @@ test('your standing comes from the leaderboard answer, in the shape eloBits read
 });
 
 test('ranked bans: 32 teams, the open step, the countdown and the line', async () => {
-  const { BAN_TEAMS, banStepOpen, banWithin, banLine } = await import('./online-model.js');
+  const { BAN_TEAMS, banTeams, banStepOpen, banWithin, banLine } = await import('./online-model.js');
   assert.equal(BAN_TEAMS.length, 32);
   assert.deepEqual([...new Set(BAN_TEAMS.map((t) => t.id))].sort((a, b) => a - b), Array.from({ length: 32 }, (_, i) => i + 1));
-  assert.equal(BAN_TEAMS.find((t) => t.id === 14).logo_url, '/live-assets/teams/14-128.png');
+  assert.equal(BAN_TEAMS.find((t) => t.id === 14).logo_url, null, 'no guessed logo path (the unversioned one 404s)');
+  const cache = new Map();
+  const live = banTeams({ ban_teams: [{ tgid: 25, logo_url: '/live-assets/r/x/teams/25-128.png' }, { tgid: 99, logo_url: '/x.png' }] }, cache);
+  assert.equal(live.length, 32);
+  assert.equal(live.find((t) => t.id === 25).logo_url, '/live-assets/r/x/teams/25-128.png');
+  assert.equal(live.find((t) => t.id === 13).logo_url, null);
+  assert.equal(banTeams({ ban_teams: null }, cache).find((t) => t.id === 25).logo_url, '/live-assets/r/x/teams/25-128.png', 'kept once the match stops sending them');
   assert.equal(banStepOpen({ ban_enabled: true, relay_state: 'field' }), true);
   assert.equal(banStepOpen({ ban_enabled: true, relay_state: 'ready' }), false);
   assert.equal(banStepOpen({ ban_enabled: false, relay_state: 'field' }), false);
