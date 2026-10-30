@@ -202,8 +202,11 @@ try {
     // The line under a name is one 18 px line: two lines run into the team logo below it. The ban reveal is checked in a
     // narrow window too, where the faces get the least room (Adam's screenshot, 10-30).
     if (name === 'ban_done') { await page.setViewportSize({ width: 860, height: 900 }); await page.waitForTimeout(300); }
-    for (const h of await page.locator('.on-psub').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) {
+    // Nor wider than its face: it wrapped in the launcher and spilled sideways here.
+    for (const [h, w, room] of await page.locator('.on-psub').evaluateAll((els) => els.map((e) => [e.getBoundingClientRect().height,
+      e.getBoundingClientRect().width, e.parentElement.getBoundingClientRect().width]))) {
       if (h > 20) problems.push(`a line under a name wraps (${Math.round(h)} px tall)`);
+      if (w > room + 1) problems.push(`a line under a name is wider than its face (${Math.round(w)} px in ${Math.round(room)})`);
     }
 
     // A tap on a team is the ban: it sends mm_match_action(ban, TGID) and nothing else.
