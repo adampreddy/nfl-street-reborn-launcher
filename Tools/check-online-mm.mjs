@@ -86,7 +86,9 @@ const STATES = {
   ban_done: { ...base, snapshot: { ...empty, match: { id: 'mb3', mode: 'ranked', status: 'lobby', relay_state: 'ready',
     relay_deadline: null, best_of: 3, you_host: true, opponent: 'Jock', field: null, your_field_pick: null,
     your_accepted: true, your_ready: true, series: [0, 0], wins_needed: 2, winner_seat: null, hold_reason: null, seat: 0,
-    ban_enabled: true, your_ban: 25, bans: [13, 25] } } },
+    ban_enabled: true, your_ban: 25, bans: [13, 25],
+    // A long handle beside a standing (Adam 10-30: it wrapped into the team logo while the bans showed).
+    opponent_discord: 'adamknowsball_on_discord', opponent_rank: 137, opponent_elo: 978, opponent_team: { id: 14, name: 'Falcons', abbr: 'ATL', logo_url: null } } } },
   held: { ...base, snapshot: { ...empty, match: { id: 'm3', mode: 'ranked', status: 'held', relay_state: 'held', relay_deadline: null,
     best_of: 3, you_host: true, opponent: 'Jock', field: 'The Pit', your_field_pick: 'the_pit', your_accepted: true, your_ready: true,
     series: [1, 1], wins_needed: 2, winner_seat: null, hold_reason: 'series-too-fast', seat: 0 } } },
@@ -128,10 +130,13 @@ const EXPECT = {
   running_bo3: { text: ['Jock', 'In play', 'Ranked · first to two wins', 'Game 2 · Series 1-0'], buttons: ['Leave match'], absent: ['Accept', 'City Limits', 'best of'] },
   relay_failed: { text: ['Jock', 'Getting ready', 'does not support launcher Netplay'], buttons: ['Leave match'] },
   held: { text: ['Your last match is held for review', 'Nothing changed on the leaderboard'], absent: ['Leave match', 'Accept'] },
-  ban_open: { text: ['Ban a team', 'to ban', '49ers', 'Ravens', 'Vikings'], buttons: ['Leave match'], counts: { '.on-ban-team': 32, '.on-ban-team.on': 0 },
-    absent: ['Banned:', 'Accept', 'to accept'] },
-  ban_picked: { text: ['Ban a team'], counts: { '.on-ban-team': 32, '.on-ban-team.on': 1, '.on-ban-team.on[data-key="ban-25"]': 1 }, absent: ['Banned:'] },
-  ban_done: { text: ['Banned: Eagles, Ravens', 'Getting ready'], buttons: ['Leave match'], counts: { '.on-ban-team': 0 }, absent: ['Ban a team'] },
+  // The list: "No ban" first, then the 32 teams.
+  ban_open: { text: ['Ban a team', 'Banning is optional', 'No ban', '49ers', 'Ravens', 'Vikings', 'Jock is picking'], buttons: ['Leave match'],
+    counts: { '.on-ban-row': 33, '.on-ban-row.none': 1, '.on-ban-row.on': 0 }, absent: ['Banned this game', 'Accept', 'to accept'] },
+  ban_picked: { text: ['Ravens banned', 'Pick another team'], counts: { '.on-ban-row': 33, '.on-ban-row.on': 1, '.on-ban-row.on[data-key="ban-25"]': 1 },
+    absent: ['Banned this game'] },
+  ban_done: { text: ['Banned this game', 'Eagles', 'Ravens', 'Getting ready', '#137 · 978 Elo'], buttons: ['Leave match'],
+    counts: { '.on-ban-row': 0, '.on-ban-card': 2 }, absent: ['Ban a team'] },
 };
 
 const types = { '.svg': 'image/svg+xml', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.jpg': 'image/jpeg', '.woff2': 'font/woff2' };
@@ -194,6 +199,12 @@ try {
       if ((await btn.count()) && !(await btn.first().isDisabled())) problems.push(`button "${b}" should be disabled`);
     }
     if (errors.length) problems.push(`page errors: ${errors.join(' | ')}`);
+    // The line under a name is one 18 px line: two lines run into the team logo below it. The ban reveal is checked in a
+    // narrow window too, where the faces get the least room (Adam's screenshot, 10-30).
+    if (name === 'ban_done') { await page.setViewportSize({ width: 860, height: 900 }); await page.waitForTimeout(300); }
+    for (const h of await page.locator('.on-psub').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))) {
+      if (h > 20) problems.push(`a line under a name wraps (${Math.round(h)} px tall)`);
+    }
 
     // A tap on a team is the ban: it sends mm_match_action(ban, TGID) and nothing else.
     if (name === 'ban_open') {

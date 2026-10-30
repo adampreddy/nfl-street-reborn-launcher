@@ -151,8 +151,10 @@ body.shell .on-tile:focus-visible,body.gamepad-input .on-tile.pad-focus{outline-
 .on-ok{position:absolute;right:-2px;bottom:-2px;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--ok);color:var(--badge-bg);font:700 14px Inter,system-ui,sans-serif}
 .on-pname{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 24px/1.1 Inter,system-ui,sans-serif;letter-spacing:-.02em}
 /* one line, like the name: a long Discord handle plus the standing used to wrap to two lines in the 18 px row and run
-   into the team logo under it (the ban step's narrower faces made it show) */
-.on-psub{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:18px;color:var(--fg-2)}
+   into the team logo under it (the ban reveal's narrower faces made it show); the handle shortens, the standing stays */
+.on-psub{display:flex;max-width:100%;min-width:0;white-space:nowrap;font-size:13px;line-height:18px;color:var(--fg-2)}
+.on-psub-who{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.on-psub-rank{flex:none;white-space:pre}
 .team-logo.on-plogo{width:44px;height:44px}
 .team-logo.on-plogo.text{font-size:13px}
 .on-mid{display:flex;flex-direction:column;align-items:center;gap:8px;max-width:360px;text-align:center}

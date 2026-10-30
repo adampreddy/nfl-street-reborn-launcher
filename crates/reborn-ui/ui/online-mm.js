@@ -578,7 +578,10 @@ function face({ url, name, discord = null, sub, team, tick = false, id = null, k
     // The nickname (a link to their profile, owner 10-08); when the player set one, its Discord name leads the small
     // line under it (the face's rows are fixed, so it shares the standing's row rather than adding one) and shows on hover.
     playerLink(id, name, { cls: 'on-pname', key, title: discord ? `@${discord}` : null }),
-    sub || discord ? el('span', { class: 'on-psub num', text: [discord ? `@${discord}` : null, sub].filter(Boolean).join(' · ') }) : null,
+    // When it is too wide the handle gives way, never the standing.
+    sub || discord ? el('span', { class: 'on-psub num' },
+      discord ? el('span', { class: 'on-psub-who', text: `@${discord}` }) : null,
+      sub ? el('span', { class: 'on-psub-rank', text: discord ? ` · ${sub}` : sub }) : null) : null,
     team ? teamLogo(team, 'on-plogo') : null);
 }
 
