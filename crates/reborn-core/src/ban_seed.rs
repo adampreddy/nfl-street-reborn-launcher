@@ -71,12 +71,21 @@ const RETAIL_ROWS: &[u16] = &[
 
 /// Every ranked seed whose tables are known. A recaptured seed needs its own entry (tools/ban_spike/ban_seed.py finds
 /// the offsets), until then it simply cannot ban.
-pub const LAYOUTS: &[Layout] = &[Layout {
-    // online-content 1.0.8 ranked.s01 (captured 2026-10-13).
-    seed_sha256: "61dd7e14bb6973ff6db68693750c223613393509bd63694904265bf0dddb3e3b",
-    tables: &[0x474_cb45, 0x47c_e315],
-    rows: RETAIL_ROWS,
-}];
+pub const LAYOUTS: &[Layout] = &[
+    Layout {
+        // online-content 1.0.8 ranked.s01 (captured 2026-10-13).
+        seed_sha256: "61dd7e14bb6973ff6db68693750c223613393509bd63694904265bf0dddb3e3b",
+        tables: &[0x474_cb45, 0x47c_e315],
+        rows: RETAIL_ROWS,
+    },
+    Layout {
+        // online-content 1.0.12 ranked.s01 (captured 2026-11-12 on the uniform-fix build; ban_seed.py found the
+        // same two offsets, and the derived state was boot-tested).
+        seed_sha256: "a4ce9039ec3e787edbf618b6e5b82fc579a2f1544c3a47286b97cda439ae9c94",
+        tables: &[0x474_cb45, 0x47c_e315],
+        rows: RETAIL_ROWS,
+    },
+];
 
 pub fn layout_for(seed_sha256: &str) -> Option<&'static Layout> {
     LAYOUTS.iter().find(|l| l.seed_sha256.eq_ignore_ascii_case(seed_sha256.trim()))
@@ -513,5 +522,21 @@ mod tests {
         let out = derive(&bytes, layout_for(&sha).unwrap(), &hidden_for(&[13, 25])).unwrap();
         assert_eq!(sha256_hex(&out), "be9cd159d2b143479f1a183b3283ee20b6a23c5da06cce1e74ea19ffc8d65e21");
         eprintln!("the installed ranked seed derived to the boot-tested bytes");
+    }
+
+    /// Any seed named by REBORN_TEST_RANKED_SEED must be a known layout and derive; REBORN_TEST_RANKED_OUT keeps
+    /// the derived state so it can be booted. Skipped when the variable is not set.
+    #[test]
+    fn a_named_ranked_seed_is_known_and_derives() {
+        let Some(seed) = std::env::var_os("REBORN_TEST_RANKED_SEED") else { return };
+        let bytes = std::fs::read(&seed).unwrap();
+        let sha = sha256_hex(&bytes);
+        let layout = layout_for(&sha).expect("the named seed has no layout");
+        let out = derive(&bytes, layout, &hidden_for(&[13, 25])).unwrap();
+        assert_ne!(out, bytes);
+        if let Some(to) = std::env::var_os("REBORN_TEST_RANKED_OUT") {
+            std::fs::write(to, &out).unwrap();
+        }
+        eprintln!("derived {} -> {}", &sha[..12], &sha256_hex(&out)[..12]);
     }
 }
