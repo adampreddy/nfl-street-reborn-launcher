@@ -85,6 +85,13 @@ pub const LAYOUTS: &[Layout] = &[
         tables: &[0x474_cb45, 0x47c_e315],
         rows: RETAIL_ROWS,
     },
+    Layout {
+        // online-content 1.0.13 ranked.s01 (captured 2026-11-14 on the GB1 Only CPU fire build + roster 2026-11-14;
+        // ban_seed.py found the same two offsets).
+        seed_sha256: "92f50639963d7ab82b6b43c14a3a22032d6e0f8da48ea71115f9cd9c2f7bd53e",
+        tables: &[0x474_cb45, 0x47c_e315],
+        rows: RETAIL_ROWS,
+    },
 ];
 
 pub fn layout_for(seed_sha256: &str) -> Option<&'static Layout> {
