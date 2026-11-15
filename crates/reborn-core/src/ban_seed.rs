@@ -91,6 +91,12 @@ pub const LAYOUTS: &[Layout] = &[
         seed_sha256: "92f50639963d7ab82b6b43c14a3a22032d6e0f8da48ea71115f9cd9c2f7bd53e",
         tables: &[0x474_cb45, 0x47c_e315],
         rows: RETAIL_ROWS,
+    },    Layout {
+        // online-content 1.0.14 ranked.s01 (captured 2026-11-15 on roster 2026-11-15; ban_seed.py found the same two
+        // offsets).
+        seed_sha256: "2eb6f8d03c423be4cb2070f2466f9ea94f7f217ad813b5c3b3cf5faa95c5b6a9",
+        tables: &[0x474_cb45, 0x47c_e315],
+        rows: RETAIL_ROWS,
     },
 ];
 
